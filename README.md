@@ -22,8 +22,7 @@ pnpm dev
 ```bash
 pnpm wasm:build  # compile crate/ into crate/pkg/
 pnpm wasm:test   # run native Rust unit tests
-pnpm build       # WASM build + TypeScript check + Vite production build
-pnpm build:cloudflare # bootstrap Rust if needed, then build
+pnpm build       # bootstrap Rust if needed, then build WASM + TypeScript
 pnpm deploy      # build and deploy dist/ with Cloudflare Workers Assets
 ```
 
@@ -32,7 +31,7 @@ normal static asset by Cloudflare.
 
 For Cloudflare Workers Builds connected to GitHub or GitLab, use:
 
-- Build command: `pnpm build:cloudflare`
+- Build command: `pnpm build`
 - Deploy command: `pnpm exec wrangler deploy`
 
 Cloudflare's build image does not include Rust by default.

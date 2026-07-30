@@ -15,4 +15,6 @@ if ! command -v wasm-pack >/dev/null 2>&1; then
   cargo install wasm-pack --version 0.15.0 --locked
 fi
 
-pnpm build
+pnpm wasm:build
+pnpm exec tsc --noEmit
+pnpm exec vite build
