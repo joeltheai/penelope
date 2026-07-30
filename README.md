@@ -1,11 +1,6 @@
 # Penelope
+a painting app
 
-A framework-free TypeScript painting frontend with a Rust/WebAssembly
-computation engine.
-
-The current Rust demonstration is real application work: it converts uneven
-browser pointer samples into evenly spaced, pressure-interpolated brush dabs.
-TypeScript remains responsible for browser input, UI, and canvas rendering.
 
 ## Development
 
@@ -33,8 +28,7 @@ pnpm deploy      # build and deploy dist/ with Cloudflare Workers Assets
 ```
 
 The generated `.wasm` file is bundled into `dist/` by Vite and served as a
-normal static asset by Cloudflare. Rust runs in the user's browser; it does not
-require a Rust backend or change the Cloudflare runtime.
+normal static asset by Cloudflare. 
 
 For Cloudflare Workers Builds connected to GitHub or GitLab, use:
 
