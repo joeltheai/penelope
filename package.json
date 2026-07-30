@@ -8,10 +8,10 @@
     "wasm:build": "wasm-pack build crate --target web --out-dir pkg --release",
     "wasm:test": "cargo test --manifest-path crate/Cargo.toml",
     "dev": "pnpm wasm:build && vite",
-    "build": "sh scripts/cloudflare-build.sh",
-    "build:cloudflare": "pnpm build",
+    "build": "tsc --noEmit && vite build",
+    "build:full": "pnpm wasm:build && pnpm build",
     "preview": "vite preview",
-    "deploy": "pnpm build && wrangler deploy",
+    "deploy": "pnpm build:full && wrangler deploy",
     "cf-typegen": "wrangler types"
   },
   "devDependencies": {
