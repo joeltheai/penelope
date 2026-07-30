@@ -18,6 +18,9 @@ jobs:
     name: Rust, web, Cloudflare
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment:
+      name: production
+      url: https://penelope.hates.workers.dev/
 
     steps:
       - name: Check out repository
