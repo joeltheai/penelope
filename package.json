@@ -1,0 +1,26 @@
+{
+  "name": "penelope",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web painting app with stylus/pen support",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "deploy": "pnpm build && wrangler deploy",
+    "cf-typegen": "wrangler types"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vite": "^7.0.6",
+    "wrangler": "^4.26.0"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.15.1",
+      "onFail": "download"
+    }
+  }
+}

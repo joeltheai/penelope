@@ -1,0 +1,97 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: dark;
+  --bg: #12141a;
+  --panel: #1a1d26;
+  --ink: #e8e6e1;
+  --muted: #8b90a0;
+  --accent: #c4a574;
+  --line: #2a2f3c;
+  --canvas: #f4f1ea;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  /* Keep the page from scrolling / bouncing while drawing on iPad */
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  height: 100dvh;
+}
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.65rem 1rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+#toolbar h1 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+#status {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#clear {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+#clear:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#stage {
+  position: relative;
+  min-height: 0;
+  background: #0c0e13;
+}
+
+#canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--canvas);
+  cursor: crosshair;
+  /* Critical for stylus: don't let the browser treat pens as scrolling/zooming */
+  touch-action: none;
+}
