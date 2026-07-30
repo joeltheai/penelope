@@ -19,11 +19,5 @@
     "vite": "^7.0.6",
     "wrangler": "^4.26.0"
   },
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "^11.15.1",
-      "onFail": "download"
-    }
-  }
+  "packageManager": "pnpm@11.18.0"
 }
