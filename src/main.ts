@@ -1,5 +1,9 @@
-import { attachPointerInput, type PointerSample } from "./input/pointer";
+import { attachPointerInput } from "./input/pointer";
 import { clearCanvas, resizeCanvasToDisplaySize } from "./canvas/surface";
+import {
+  initializeRustEngine,
+  type BrushDab,
+} from "./engine/stroke";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas");
 const statusEl = document.querySelector<HTMLElement>("#status");
@@ -18,13 +22,14 @@ if (!ctx) {
   throw new Error("2D canvas context unavailable");
 }
 
-let lastSample: PointerSample | null = null;
+const strokeEngine = await initializeRustEngine();
+let lastDab: BrushDab | null = null;
 
 function setStatus(text: string): void {
   statusEl!.textContent = text;
 }
 
-function paintSegment(from: PointerSample, to: PointerSample): void {
+function paintSegment(from: BrushDab, to: BrushDab): void {
   const radius = 1.5 + to.pressure * 14;
   ctx!.beginPath();
   ctx!.moveTo(from.x, from.y);
@@ -49,35 +54,40 @@ window.addEventListener("resize", fit);
 
 clearBtn.addEventListener("click", () => {
   clearCanvas(ctx!);
-  lastSample = null;
+  lastDab = null;
   setStatus("Cleared");
 });
 
 const detach = attachPointerInput(canvas, {
   onStrokeStart(sample) {
-    lastSample = sample;
+    const [firstDab] = strokeEngine.start(sample, 2.5 * devicePixelRatio);
+    if (firstDab) {
+      paintSegment(firstDab, firstDab);
+      lastDab = firstDab;
+    }
     setStatus(
-      `${sample.pointerType} · p ${sample.pressure.toFixed(2)} · tilt ${sample.tiltX}/${sample.tiltY}`,
+      `Rust/WASM · ${sample.pointerType} · p ${sample.pressure.toFixed(2)} · tilt ${sample.tiltX}/${sample.tiltY}`,
     );
   },
   onStrokeMove(samples) {
-    for (const sample of samples) {
-      if (lastSample) paintSegment(lastSample, sample);
-      lastSample = sample;
+    const dabs = strokeEngine.push(samples, 2.5 * devicePixelRatio);
+    for (const dab of dabs) {
+      if (lastDab) paintSegment(lastDab, dab);
+      lastDab = dab;
     }
     const tip = samples.at(-1);
     if (tip) {
       setStatus(
-        `${tip.pointerType} · p ${tip.pressure.toFixed(2)} · tilt ${tip.tiltX}/${tip.tiltY} · ${samples.length} sample(s)`,
+        `Rust/WASM · ${tip.pointerType} · p ${tip.pressure.toFixed(2)} · ${samples.length} input → ${dabs.length} dab(s)`,
       );
     }
   },
   onStrokeEnd() {
-    lastSample = null;
+    lastDab = null;
   },
 });
 
 // Keep detach reachable for hot-reload / future teardown.
 void detach;
 
-setStatus("Draw with mouse, finger, or Apple Pencil");
+setStatus("Rust/WASM engine ready · draw with mouse, finger, or Apple Pencil");

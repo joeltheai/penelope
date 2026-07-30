@@ -1,0 +1,20 @@
+[package]
+name = "penelope-engine"
+version = "0.1.0"
+edition = "2024"
+description = "CPU-side painting computations for Penelope"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
