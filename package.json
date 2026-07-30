@@ -5,14 +5,11 @@
   "type": "module",
   "description": "Web painting app with stylus/pen support",
   "scripts": {
-    "wasm:build": "wasm-pack build crate --target web --out-dir pkg --release",
-    "wasm:test": "cargo test --manifest-path crate/Cargo.toml",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "build:full": "pnpm build",
     "test": "vitest run",
     "preview": "vite preview",
-    "deploy": "pnpm build:full && wrangler deploy",
+    "deploy": "pnpm build && wrangler deploy",
     "cf-typegen": "wrangler types"
   },
   "devDependencies": {

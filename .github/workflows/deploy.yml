@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   deploy:
-    name: Tests, web, Cloudflare
+    name: Test, build, Cloudflare
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     environment:
       name: production
       url: https://penelope.hates.workers.dev/
@@ -37,24 +37,13 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: crate
-
-      - name: Install web dependencies
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Test TypeScript engine
+      - name: Test
         run: pnpm test
 
-      - name: Test Rust engine
-        run: pnpm wasm:test
-
-      - name: Build TypeScript frontend
+      - name: Build
         run: pnpm build
 
       - name: Deploy to Cloudflare Workers

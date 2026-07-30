@@ -13,28 +13,21 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` starts Vite. The latency-sensitive stroke resampler runs directly
-in TypeScript to avoid per-pointer-event JavaScript/WebAssembly copies.
-
 ## Commands
 
 ```bash
-pnpm wasm:build  # compile crate/ into crate/pkg/
-pnpm wasm:test   # run native Rust unit tests
-pnpm build       # typecheck + build the frontend
-pnpm build:full  # alias for the complete frontend build
-pnpm deploy      # build and deploy dist/ with Cloudflare Workers Assets
+pnpm test     # run TypeScript unit tests
+pnpm build    # typecheck + build the frontend into dist/
+pnpm preview  # serve the production build locally
+pnpm deploy   # build and deploy dist/ with Cloudflare Workers Assets
 ```
-
-The Rust crate is retained for future coarse-grained engine work, but it is not
-part of the browser's pointer hot path or production bundle.
 
 ## Deployment
 
 `.github/workflows/deploy.yml` runs on every push to `main`. GitHub Actions:
 
-1. Tests the retained Rust engine crate.
-2. Builds the TypeScript frontend.
+1. Installs Node and pnpm.
+2. Runs tests and builds the TypeScript frontend.
 3. Deploys `dist/` to Cloudflare with Wrangler.
 
 Add these repository secrets under **GitHub → Settings → Secrets and variables →
@@ -57,6 +50,22 @@ Stroke smoothing and resampling (TypeScript)
 Dirty-region Canvas renderer (TypeScript, WebGPU later)
 ```
 
-Rust remains an option for coarse CPU-heavy features such as document
-operations, tile-based undo, selections, and file encoding. GPU-heavy painting
-and compositing should eventually use WebGPU/WGSL.
+GPU-heavy painting and compositing should eventually use WebGPU/WGSL.
+
+## Ink performance capture
+
+Add `?perf=1` to the app URL to enable the low-overhead ink telemetry overlay:
+
+```text
+https://penelope.hates.workers.dev/?perf=1
+```
+
+Draw several representative fast, slow, curved, and pressure-varying strokes.
+After each stroke, the overlay reports p50/p95 input age, animation-frame wait,
+frame interval, stroke CPU work, and Canvas composite CPU work. The same summary
+is logged to the browser console as `[Penelope ink performance]`.
+
+These are JavaScript pipeline measurements. They do not include browser
+compositor queuing, display scanout, or physical Apple Pencil latency, so use
+them to compare builds on the same iPad rather than as absolute input-to-photon
+latency.

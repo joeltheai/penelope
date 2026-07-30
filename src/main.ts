@@ -1,6 +1,7 @@
 import { attachPointerInput, type PointerSample } from "./input/pointer";
 import { clearCanvas, resizeCanvasToDisplaySize } from "./canvas/surface";
 import { StrokeEngine, type BrushDab } from "./engine/stroke";
+import { InkPerformanceMonitor } from "./performance/ink-metrics";
 
 type Tool = "brush" | "eyedropper";
 type DirtyRect = {
@@ -81,6 +82,9 @@ readbackCanvas.width = 1;
 readbackCanvas.height = 1;
 
 const strokeEngine = new StrokeEngine();
+const inkPerformance = new InkPerformanceMonitor(
+  new URLSearchParams(window.location.search).get("perf") === "1",
+);
 let lastDab: BrushDab | null = null;
 let brushSize = brushSizeInput.valueAsNumber;
 let brushFlow = brushFlowInput.valueAsNumber;
@@ -93,6 +97,7 @@ let resizePending = false;
 let statusRaf = 0;
 let pendingStatus = "";
 let compositeRaf = 0;
+let compositeRequestedAt = 0;
 let strokeBounds: DirtyRect | null = null;
 let pendingDirty: DirtyRect | null = null;
 let previewBounds: DirtyRect | null = null;
@@ -323,18 +328,28 @@ function paintPredictedTail(samples: PointerSample[]): DirtyRect | null {
 
 function requestComposite(): void {
   if (compositeRaf !== 0) return;
-  compositeRaf = requestAnimationFrame(() => {
+  compositeRequestedAt = inkPerformance.enabled ? performance.now() : 0;
+  compositeRaf = requestAnimationFrame((frameTime) => {
     compositeRaf = 0;
+    const compositeStartedAt = inkPerformance.enabled ? performance.now() : 0;
     // Restoring the old preview region erases speculative ink. The latest
     // actual stroke data is already present on strokeCanvas.
     const dirty = unionRect(pendingDirty, previewBounds);
     pendingDirty = null;
     compositeStrokeToDocument(dirty);
     previewBounds = paintPredictedTail(pendingPreview);
+    if (inkPerformance.enabled) {
+      inkPerformance.recordFrame(
+        compositeRequestedAt,
+        frameTime,
+        performance.now() - compositeStartedAt,
+      );
+    }
   });
 }
 
 function endStrokeLayer(): void {
+  const compositeStartedAt = inkPerformance.enabled ? performance.now() : 0;
   if (compositeRaf !== 0) {
     cancelAnimationFrame(compositeRaf);
     compositeRaf = 0;
@@ -370,6 +385,11 @@ function endStrokeLayer(): void {
   pendingDirty = null;
   previewBounds = null;
   pendingPreview = [];
+  if (inkPerformance.enabled) {
+    inkPerformance.recordSynchronousComposite(
+      performance.now() - compositeStartedAt,
+    );
+  }
 }
 
 function fit(): void {
@@ -443,11 +463,19 @@ const detach = attachPointerInput(canvas, {
       return;
     }
 
+    inkPerformance.startStroke(sample);
+    const workStartedAt = inkPerformance.enabled ? performance.now() : 0;
     beginStrokeLayer();
     const dabs = strokeEngine.start(sample, dabSpacing());
     if (dabs.length > 0) {
       paintStrokeDabs(dabs);
       requestComposite();
+    }
+    if (inkPerformance.enabled) {
+      inkPerformance.recordStrokeWork(
+        performance.now() - workStartedAt,
+        dabs.length,
+      );
     }
     setStatus(
       `${sample.pointerType} · p ${sample.pressure.toFixed(2)} · tilt ${sample.tiltX}/${sample.tiltY}`,
@@ -466,20 +494,40 @@ const detach = attachPointerInput(canvas, {
       return;
     }
 
+    inkPerformance.recordInput(samples);
+    const workStartedAt = inkPerformance.enabled ? performance.now() : 0;
     const dabs = strokeEngine.push(samples, dabSpacing());
-    if (dabs.length === 0) return;
-    paintStrokeDabs(dabs);
-    requestComposite();
+    if (dabs.length > 0) {
+      paintStrokeDabs(dabs);
+      requestComposite();
+    }
+    if (inkPerformance.enabled) {
+      inkPerformance.recordStrokeWork(
+        performance.now() - workStartedAt,
+        dabs.length,
+      );
+    }
   },
   onStrokePreview(samples) {
     if (tool !== "brush" || !strokeActive) return;
+    inkPerformance.recordPredictions(samples.length);
     pendingPreview = samples;
     requestComposite();
   },
   onStrokeEnd(sample) {
     if (tool === "brush" && strokeActive) {
-      paintStrokeDabs(strokeEngine.finish(sample, dabSpacing()));
+      inkPerformance.recordInput([sample]);
+      const workStartedAt = inkPerformance.enabled ? performance.now() : 0;
+      const dabs = strokeEngine.finish(sample, dabSpacing());
+      paintStrokeDabs(dabs);
+      if (inkPerformance.enabled) {
+        inkPerformance.recordStrokeWork(
+          performance.now() - workStartedAt,
+          dabs.length,
+        );
+      }
       endStrokeLayer();
+      inkPerformance.finishStroke();
     }
     drawing = false;
     if (tool === "eyedropper") {
