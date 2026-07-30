@@ -17,6 +17,40 @@
       <header id="toolbar">
         <h1>Penelope</h1>
         <div id="status" aria-live="polite">Ready</div>
+        <label class="brush-size">
+          <span>Size</span>
+          <input
+            id="brush-size"
+            type="range"
+            min="2"
+            max="100"
+            value="24"
+            aria-label="Brush size"
+          />
+          <output id="brush-size-value" for="brush-size">24</output>
+        </label>
+        <label class="opacity">
+          <span>Opacity</span>
+          <input
+            id="brush-opacity"
+            type="range"
+            min="0.05"
+            max="1"
+            step="0.05"
+            value="1"
+            aria-label="Brush opacity"
+          />
+          <output id="brush-opacity-value" for="brush-opacity">100%</output>
+        </label>
+        <label class="color">
+          <span>Color</span>
+          <input
+            id="brush-color"
+            type="color"
+            value="#1a1a1a"
+            aria-label="Brush color"
+          />
+        </label>
         <button type="button" id="clear" title="Clear canvas">Clear</button>
       </header>
       <main id="stage">

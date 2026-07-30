@@ -63,6 +63,40 @@ body {
   text-overflow: ellipsis;
 }
 
+.brush-size,
+.opacity,
+.color {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.brush-size input,
+.opacity input {
+  width: clamp(6rem, 16vw, 11rem);
+  accent-color: var(--accent);
+}
+
+.brush-size output,
+.opacity output {
+  width: 2.5rem;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.color input {
+  width: 2rem;
+  height: 2rem;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
 #clear {
   appearance: none;
   border: 1px solid var(--line);
@@ -94,4 +128,22 @@ body {
   cursor: crosshair;
   /* Critical for stylus: don't let the browser treat pens as scrolling/zooming */
   touch-action: none;
+}
+
+@media (max-width: 600px) {
+  #status,
+  .brush-size span,
+  .opacity span,
+  .color span {
+    display: none;
+  }
+
+  .brush-size {
+    margin-left: auto;
+  }
+
+  .brush-size input,
+  .opacity input {
+    width: 5rem;
+  }
 }

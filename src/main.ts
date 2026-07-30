@@ -8,8 +8,27 @@ import {
 const canvas = document.querySelector<HTMLCanvasElement>("#canvas");
 const statusEl = document.querySelector<HTMLElement>("#status");
 const clearBtn = document.querySelector<HTMLButtonElement>("#clear");
+const brushSizeInput =
+  document.querySelector<HTMLInputElement>("#brush-size");
+const brushSizeValue =
+  document.querySelector<HTMLOutputElement>("#brush-size-value");
+const brushOpacityInput =
+  document.querySelector<HTMLInputElement>("#brush-opacity");
+const brushOpacityValue =
+  document.querySelector<HTMLOutputElement>("#brush-opacity-value");
+const brushColorInput =
+  document.querySelector<HTMLInputElement>("#brush-color");
 
-if (!canvas || !statusEl || !clearBtn) {
+if (
+  !canvas ||
+  !statusEl ||
+  !clearBtn ||
+  !brushSizeInput ||
+  !brushSizeValue ||
+  !brushOpacityInput ||
+  !brushOpacityValue ||
+  !brushColorInput
+) {
   throw new Error("Missing required DOM nodes");
 }
 
@@ -24,21 +43,27 @@ if (!ctx) {
 
 const strokeEngine = await initializeRustEngine();
 let lastDab: BrushDab | null = null;
+let brushSize = brushSizeInput.valueAsNumber;
+let brushOpacity = brushOpacityInput.valueAsNumber;
+let brushColor = brushColorInput.value;
 
 function setStatus(text: string): void {
   statusEl!.textContent = text;
 }
 
 function paintSegment(from: BrushDab, to: BrushDab): void {
-  const radius = 1.5 + to.pressure * 14;
+  const pressureScale = 0.15 + to.pressure * 0.85;
+  const diameter = brushSize * devicePixelRatio * pressureScale;
   ctx!.beginPath();
   ctx!.moveTo(from.x, from.y);
   ctx!.lineTo(to.x, to.y);
-  ctx!.strokeStyle = "#1a1a1a";
-  ctx!.lineWidth = radius * 2;
+  ctx!.strokeStyle = brushColor;
+  ctx!.globalAlpha = brushOpacity;
+  ctx!.lineWidth = diameter;
   ctx!.lineCap = "round";
   ctx!.lineJoin = "round";
   ctx!.stroke();
+  ctx!.globalAlpha = 1;
 }
 
 function fit(): void {
@@ -56,6 +81,24 @@ clearBtn.addEventListener("click", () => {
   clearCanvas(ctx!);
   lastDab = null;
   setStatus("Cleared");
+});
+
+brushSizeInput.addEventListener("input", () => {
+  brushSize = brushSizeInput.valueAsNumber;
+  brushSizeValue.value = String(brushSize);
+  setStatus(`Brush size ${brushSize}px`);
+});
+
+brushOpacityInput.addEventListener("input", () => {
+  brushOpacity = brushOpacityInput.valueAsNumber;
+  const percentage = Math.round(brushOpacity * 100);
+  brushOpacityValue.value = `${percentage}%`;
+  setStatus(`Brush opacity ${percentage}%`);
+});
+
+brushColorInput.addEventListener("input", () => {
+  brushColor = brushColorInput.value;
+  setStatus(`Brush color ${brushColor}`);
 });
 
 const detach = attachPointerInput(canvas, {
