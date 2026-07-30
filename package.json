@@ -7,9 +7,10 @@
   "scripts": {
     "wasm:build": "wasm-pack build crate --target web --out-dir pkg --release",
     "wasm:test": "cargo test --manifest-path crate/Cargo.toml",
-    "dev": "pnpm wasm:build && vite",
+    "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "build:full": "pnpm wasm:build && pnpm build",
+    "build:full": "pnpm build",
+    "test": "vitest run",
     "preview": "vite preview",
     "deploy": "pnpm build:full && wrangler deploy",
     "cf-typegen": "wrangler types"
@@ -17,6 +18,7 @@
   "devDependencies": {
     "typescript": "^5.9.2",
     "vite": "^7.0.6",
+    "vitest": "^4.1.10",
     "wrangler": "^4.26.0"
   },
   "packageManager": "pnpm@11.18.0"

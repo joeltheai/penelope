@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Rust, web, Cloudflare
+    name: Tests, web, Cloudflare
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -39,25 +39,20 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: crate
 
-      - name: Install wasm-pack
-        uses: taiki-e/install-action@wasm-pack
-
       - name: Install web dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test TypeScript engine
+        run: pnpm test
+
       - name: Test Rust engine
         run: pnpm wasm:test
-
-      - name: Compile Rust to WebAssembly
-        run: pnpm wasm:build
 
       - name: Build TypeScript frontend
         run: pnpm build

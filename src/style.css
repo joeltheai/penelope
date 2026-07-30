@@ -13,6 +13,18 @@
   --accent: #c4a574;
   --line: #2a2f3c;
   --canvas: #f4f1ea;
+
+  /* Fluid UI scale from viewport — works across phone / iPad / desktop */
+  --ui: clamp(0.85rem, 0.35rem + 1.2vw, 1.05rem);
+  --gap: clamp(0.4rem, 0.25rem + 1vw, 1rem);
+  --pad-x: clamp(0.55rem, 0.35rem + 1.2vw, 1.15rem);
+  --pad-y: clamp(0.4rem, 0.25rem + 0.8vh, 0.75rem);
+  --control-h: clamp(1.75rem, 1.4rem + 1.2vh, 2.15rem);
+  --slider-w: clamp(4.5rem, 18vw, 11rem);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
 }
 
 html,
@@ -23,39 +35,48 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: var(--ui);
   /* Keep the page from scrolling / bouncing while drawing on iPad */
   touch-action: none;
   overscroll-behavior: none;
   -webkit-user-select: none;
   user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 #app {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   height: 100dvh;
+  height: 100svh;
+  padding: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l);
 }
 
 #toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
-  padding: 0.65rem 1rem;
+  gap: var(--gap);
+  padding: var(--pad-y) var(--pad-x);
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+  min-height: calc(var(--control-h) + var(--pad-y) * 2);
 }
 
 #toolbar h1 {
   margin: 0;
-  font-size: 1rem;
+  font-size: clamp(0.95rem, 0.8rem + 0.6vw, 1.15rem);
   font-weight: 600;
   letter-spacing: 0.02em;
+  flex-shrink: 0;
 }
 
 #status {
-  flex: 1;
-  font-size: 0.8rem;
+  flex: 1 1 8rem;
+  min-width: 0;
+  font-size: clamp(0.7rem, 0.6rem + 0.4vw, 0.85rem);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -63,33 +84,78 @@ body {
   text-overflow: ellipsis;
 }
 
+.tools {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--gap) * 0.35);
+  flex-shrink: 0;
+}
+
+.tool,
+#clear {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  padding: 0 calc(var(--pad-x) * 0.7);
+  height: var(--control-h);
+  border-radius: 6px;
+  font: inherit;
+  font-size: clamp(0.75rem, 0.65rem + 0.4vw, 0.9rem);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tool {
+  width: var(--control-h);
+  padding: 0;
+  font-weight: 700;
+}
+
+.tool.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.tool:hover,
+#clear:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .brush-size,
+.flow,
 .opacity,
 .color {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: calc(var(--gap) * 0.55);
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: clamp(0.7rem, 0.6rem + 0.4vw, 0.85rem);
+  flex-shrink: 0;
 }
 
 .brush-size input,
+.flow input,
 .opacity input {
-  width: clamp(6rem, 16vw, 11rem);
+  width: var(--slider-w);
+  height: var(--control-h);
   accent-color: var(--accent);
 }
 
 .brush-size output,
+.flow output,
 .opacity output {
-  width: 2.5rem;
+  width: clamp(2.25rem, 1.6rem + 1.8vw, 3rem);
   color: var(--ink);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
 .color input {
-  width: 2rem;
-  height: 2rem;
+  width: var(--control-h);
+  height: var(--control-h);
   padding: 2px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -98,25 +164,13 @@ body {
 }
 
 #clear {
-  appearance: none;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--ink);
-  padding: 0.35rem 0.75rem;
-  border-radius: 6px;
-  font: inherit;
-  font-size: 0.85rem;
-  cursor: pointer;
-}
-
-#clear:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+  margin-left: auto;
 }
 
 #stage {
   position: relative;
   min-height: 0;
+  min-width: 0;
   background: #0c0e13;
 }
 
@@ -130,20 +184,50 @@ body {
   touch-action: none;
 }
 
-@media (max-width: 600px) {
-  #status,
+#canvas[data-tool="eyedropper"] {
+  cursor: copy;
+}
+
+/* Narrow / phone portrait: hide verbose chrome, keep drawing controls */
+@media (max-width: 600px), (orientation: portrait) and (max-width: 920px) {
+  #status {
+    display: none;
+  }
+
   .brush-size span,
+  .flow span,
   .opacity span,
   .color span {
     display: none;
   }
 
-  .brush-size {
+  #toolbar {
+    gap: calc(var(--gap) * 0.75);
+  }
+
+  .tools {
     margin-left: auto;
   }
 
+  #clear {
+    margin-left: 0;
+  }
+
   .brush-size input,
+  .flow input,
   .opacity input {
-    width: 5rem;
+    width: clamp(3.5rem, 16vw, 6.5rem);
+  }
+}
+
+/* Short landscape (iPad / phone landscape): tighter vertical chrome */
+@media (orientation: landscape) and (max-height: 500px) {
+  :root {
+    --pad-y: 0.35rem;
+    --control-h: 1.65rem;
+  }
+
+  #status {
+    display: none;
   }
 }

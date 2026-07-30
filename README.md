@@ -7,37 +7,35 @@ a painting app
 Requirements:
 
 - pnpm
-- Rust and Cargo
-- `wasm-pack`
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-`pnpm dev` compiles `crate/` to WebAssembly and then starts Vite.
+`pnpm dev` starts Vite. The latency-sensitive stroke resampler runs directly
+in TypeScript to avoid per-pointer-event JavaScript/WebAssembly copies.
 
 ## Commands
 
 ```bash
 pnpm wasm:build  # compile crate/ into crate/pkg/
 pnpm wasm:test   # run native Rust unit tests
-pnpm build       # typecheck + build the frontend using existing WASM output
-pnpm build:full  # compile WASM, then build the frontend
+pnpm build       # typecheck + build the frontend
+pnpm build:full  # alias for the complete frontend build
 pnpm deploy      # build and deploy dist/ with Cloudflare Workers Assets
 ```
 
-The generated `.wasm` file is bundled into `dist/` by Vite and served as a
-normal static asset by Cloudflare. 
+The Rust crate is retained for future coarse-grained engine work, but it is not
+part of the browser's pointer hot path or production bundle.
 
 ## Deployment
 
 `.github/workflows/deploy.yml` runs on every push to `main`. GitHub Actions:
 
-1. Installs and caches Rust.
-2. Tests and compiles the Rust crate to browser WebAssembly.
-3. Builds the TypeScript frontend.
-4. Deploys `dist/` to Cloudflare with Wrangler.
+1. Tests the retained Rust engine crate.
+2. Builds the TypeScript frontend.
+3. Deploys `dist/` to Cloudflare with Wrangler.
 
 Add these repository secrets under **GitHub → Settings → Secrets and variables →
 Actions**:
@@ -53,12 +51,12 @@ leaving both enabled would trigger two deployments for each push.
 
 ```text
 Pointer Events (TypeScript)
-        ↓ packed Float32Array
-Stroke resampling (Rust → WebAssembly)
+        ↓ coalesced actual samples + temporary predictions
+Stroke smoothing and resampling (TypeScript)
         ↓ evenly spaced brush dabs
-Canvas renderer (TypeScript, WebGPU later)
+Dirty-region Canvas renderer (TypeScript, WebGPU later)
 ```
 
-The Rust crate is the starting point for CPU-heavy engine features such as
-stroke dynamics, document operations, tile-based undo, selections, and file
-encoding. GPU-heavy painting and compositing should eventually use WebGPU/WGSL.
+Rust remains an option for coarse CPU-heavy features such as document
+operations, tile-based undo, selections, and file encoding. GPU-heavy painting
+and compositing should eventually use WebGPU/WGSL.
