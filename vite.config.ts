@@ -1,12 +1,13 @@
-import { defineConfig } from "vite";
+import { defineConfig } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 export default defineConfig({
-  root: ".",
-  publicDir: "public",
+  plugins: [svelte()],
+  publicDir: 'public',
   build: {
-    outDir: "dist",
+    outDir: 'dist',
     emptyOutDir: true,
-    target: "es2022",
+    target: 'es2022',
   },
   server: {
     host: true,

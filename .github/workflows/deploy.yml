@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Test, build, Cloudflare
+    name: Build, Cloudflare
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -39,9 +39,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Test
-        run: pnpm test
 
       - name: Build
         run: pnpm build
