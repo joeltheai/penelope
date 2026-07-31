@@ -2,12 +2,16 @@
   "name": "penelope",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "description": "Web painting app — q5.js feasibility spike",
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
     "preview": "vite preview",
     "deploy": "pnpm build && wrangler deploy"
   },
@@ -16,9 +20,14 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@tailwindcss/vite": "^4.3.3",
     "@tsconfig/svelte": "^5.0.8",
+    "oxfmt": "^0.61.0",
+    "oxlint": "^1.76.0",
+    "oxlint-tsgolint": "^7.0.2001",
     "svelte": "^5.56.8",
     "svelte-check": "^4.7.4",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
     "wrangler": "^4.26.0"
