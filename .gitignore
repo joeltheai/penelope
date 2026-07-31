@@ -6,6 +6,7 @@ dist/
 .DS_Store
 *.log
 .vite/
+.cursor/
 crate/target/
 crate/pkg/
 *.wasm
