@@ -1,30 +1,33 @@
 <script lang="ts">
-  import 'q5';
+  import { createSketch } from './q5';
+  import type { Q5Instance } from './q5-instance';
 
   const BRUSH_RADIUS = 12;
 
   let color = $state('#1a1a1a');
 
   function sketch(el: HTMLElement) {
-    // q5 instance typings are incomplete for namespace mode — treat as any for now.
-    let q: any;
+    let q: Q5Instance | undefined;
     let cancelled = false;
 
     (async () => {
-      q = await (Q5.WebGPU as any)('namespace', el);
+      q = await createSketch(el);
       if (cancelled) {
         await q.remove();
         return;
       }
 
       q.createCanvas(el.clientWidth, el.clientHeight);
+      q.background('red');
       q.background('#f4f4f4');
+      // q.noStroke();
       q.noStroke();
 
+
       q.draw = () => {
-        if (!q.mouseIsPressed) return;
-        q.fill(color);
-        q.capsule(q.pmouseX, q.pmouseY, q.mouseX, q.mouseY, BRUSH_RADIUS);
+        if (!q!.mouseIsPressed) return;
+        q!.fill(color);
+        q!.capsule(q!.pmouseX, q!.pmouseY, q!.mouseX, q!.mouseY, BRUSH_RADIUS);
       };
     })();
 
