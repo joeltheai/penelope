@@ -1,8 +1,9 @@
 <script lang="ts">
 	let {
 		color = $bindable('#1a6cff'),
-		size = $bindable(8)
-	}: { color?: string; size?: number } = $props();
+		size = $bindable(8),
+		opacity = $bindable(1)
+	}: { color?: string; size?: number; opacity?: number } = $props();
 
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -147,6 +148,7 @@
 
 		function paintAt(sx: number, sy: number) {
 			const p = screenToDoc(sx, sy);
+			dctx.globalAlpha = opacity;
 			dctx.fillStyle = color;
 			dctx.strokeStyle = color;
 			dctx.lineWidth = size * 2;
