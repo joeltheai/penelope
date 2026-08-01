@@ -1,14 +1,16 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "penelope",
-  // Assets-only Worker: Vite builds the client into ./dist, Cloudflare serves it from the edge.
-  // No Worker script needed yet. Add "main" later if you want edge APIs (save/load, auth, etc.).
-  "compatibility_date": "2026-07-30",
-  "assets": {
-    "directory": "./dist",
-    "not_found_handling": "single-page-application"
-  },
-  "observability": {
-    "enabled": true
-  }
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "penelope",
+	"compatibility_date": "2026-08-01",
+	"compatibility_flags": ["nodejs_als"],
+	"main": ".svelte-kit/cloudflare/_worker.js",
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".svelte-kit/cloudflare"
+	},
+	"workers_dev": true,
+	"preview_urls": true,
+	"observability": {
+		"enabled": true
+	}
 }
