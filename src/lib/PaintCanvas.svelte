@@ -46,11 +46,17 @@
 		dctx.fillStyle = '#fff';
 		dctx.fillRect(0, 0, DOC_W, DOC_H);
 
+		const stroke = document.createElement('canvas');
+		stroke.width = DOC_W;
+		stroke.height = DOC_H;
+		const sctx = stroke.getContext('2d')!;
+
 		const view = { x: 0, y: 0, zoom: 0.5, rotation: 0 };
 		let cssW = 0;
 		let cssH = 0;
 
 		let drawing = false;
+		let strokeActive = false;
 		let panning = false;
 		let rotating = false;
 		let lastX = 0;
@@ -120,7 +126,6 @@
 		}
 
 		function present() {
-
 			const dpr = devicePixelRatio || 1;
 			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 			ctx.fillStyle = '#1c1c1d';
@@ -134,7 +139,27 @@
 			ctx.scale(view.zoom, view.zoom);
 			ctx.translate(-DOC_W / 2, -DOC_H / 2);
 			ctx.drawImage(doc, 0, 0);
+			if (strokeActive) {
+				ctx.globalAlpha = opacity;
+				ctx.drawImage(stroke, 0, 0);
+			}
 			ctx.restore();
+		}
+
+		function beginStroke() {
+			sctx.clearRect(0, 0, DOC_W, DOC_H);
+			strokeActive = true;
+		}
+
+		function endStroke() {
+			if (!strokeActive) return;
+			dctx.save();
+			dctx.globalAlpha = opacity;
+			dctx.drawImage(stroke, 0, 0);
+			dctx.restore();
+			sctx.clearRect(0, 0, DOC_W, DOC_H);
+			strokeActive = false;
+			present();
 		}
 
 		function resize() {
@@ -148,22 +173,22 @@
 
 		function paintAt(sx: number, sy: number) {
 			const p = screenToDoc(sx, sy);
-			dctx.globalAlpha = opacity;
-			dctx.fillStyle = color;
-			dctx.strokeStyle = color;
-			dctx.lineWidth = size * 2;
-			dctx.lineCap = 'round';
-			dctx.lineJoin = 'round';
+			sctx.globalAlpha = 1;
+			sctx.fillStyle = color;
+			sctx.strokeStyle = color;
+			sctx.lineWidth = size * 2;
+			sctx.lineCap = 'round';
+			sctx.lineJoin = 'round';
 
 			if (lastDoc) {
-				dctx.beginPath();
-				dctx.moveTo(lastDoc.x, lastDoc.y);
-				dctx.lineTo(p.x, p.y);
-				dctx.stroke();
+				sctx.beginPath();
+				sctx.moveTo(lastDoc.x, lastDoc.y);
+				sctx.lineTo(p.x, p.y);
+				sctx.stroke();
 			} else {
-				dctx.beginPath();
-				dctx.arc(p.x, p.y, size, 0, Math.PI * 2);
-				dctx.fill();
+				sctx.beginPath();
+				sctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+				sctx.fill();
 			}
 			lastDoc = p;
 			present();
@@ -178,6 +203,7 @@
 			if (e.pointerType === 'touch') {
 				touches[e.pointerId] = { x: e.clientX, y: e.clientY };
 				if (touchCount() === 2) {
+					if (drawing || strokeActive) endStroke();
 					drawing = false;
 					lastDoc = null;
 					const [a, b] = touchList();
@@ -214,6 +240,7 @@
 			if (e.button === 0 || e.pointerType === 'touch') {
 				drawing = true;
 				lastDoc = null;
+				beginStroke();
 				paintAt(e.clientX, e.clientY);
 			}
 		}
@@ -272,6 +299,7 @@
 			delete touches[e.pointerId];
 			if (touchCount() < 2) pinch = null;
 
+			if (drawing || strokeActive) endStroke();
 			drawing = false;
 			panning = false;
 			rotating = false;
