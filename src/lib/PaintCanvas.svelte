@@ -1,12 +1,21 @@
 <script lang="ts">
+	import { createGpuPaint, type GpuPaint } from '$lib/gpuPaint';
+	import {
+		createPenPressureState,
+		eventLooksLikeRealPressure,
+		getStrokePressure,
+		mapPressureCurve,
+		updateHasPressure
+	} from '$lib/penPressure';
+
 	let {
 		color = $bindable('#1a6cff'),
 		size = $bindable(8),
 		opacity = $bindable(1)
 	}: { color?: string; size?: number; opacity?: number } = $props();
 
-
 	let canvasEl: HTMLCanvasElement | undefined = $state();
+	let gpuError = $state<string | null>(null);
 
 	let space = false;
 	let alt = false;
@@ -29,27 +38,10 @@
 
 	$effect(() => {
 		if (!canvasEl) return;
-		const surface = canvasEl!;
-		const ctx = surface.getContext('2d')!;
+		const surface = canvasEl;
 
-		const DOC_W = 1024;
-		const DOC_H = 1024;
-		const MIN_Z = 0.05;
-		const MAX_Z = 20;
-
-
-		const doc = document.createElement('canvas');
-		doc.width = DOC_W;
-		doc.height = DOC_H;
-		const dctx = doc.getContext('2d')!;
-
-		dctx.fillStyle = '#fff';
-		dctx.fillRect(0, 0, DOC_W, DOC_H);
-
-		const stroke = document.createElement('canvas');
-		stroke.width = DOC_W;
-		stroke.height = DOC_H;
-		const sctx = stroke.getContext('2d')!;
+		let cancelled = false;
+		let gpu: GpuPaint | null = null;
 
 		const view = { x: 0, y: 0, zoom: 0.5, rotation: 0 };
 		let cssW = 0;
@@ -61,9 +53,9 @@
 		let rotating = false;
 		let lastX = 0;
 		let lastY = 0;
-		let lastDoc: { x: number; y: number } | null = null;
 		let rotatePivot = { x: 0, y: 0 };
 		let lastRotateAngle: number | null = null;
+		const penState = createPenPressureState();
 
 		const touches: Record<number, { x: number; y: number }> = {};
 		let pinch: {
@@ -83,6 +75,9 @@
 		}
 
 		function screenToDoc(sx: number, sy: number) {
+			if (!gpu) return { x: 0, y: 0 };
+			const DOC_W = gpu.docW;
+			const DOC_H = gpu.docH;
 			const cx = cssW / 2;
 			const cy = cssH / 2;
 			let x = sx - cx - view.x;
@@ -97,16 +92,23 @@
 			};
 		}
 
+		function present() {
+			gpu?.present(view, cssW, cssH, opacity, strokeActive);
+		}
+
 		/** Keep the doc point under `pivot` fixed when zoom/rotation change. */
 		function setViewAroundPivot(pivotX: number, pivotY: number, newZoom: number, newRotation: number) {
+			const MIN_Z = 0.05;
+			const MAX_Z = 20;
+			if (!gpu) return;
 			const before = screenToDoc(pivotX, pivotY);
 			view.zoom = Math.min(MAX_Z, Math.max(MIN_Z, newZoom));
 			view.rotation = newRotation;
 
 			const cos = Math.cos(view.rotation);
 			const sin = Math.sin(view.rotation);
-			const dx = (before.x - DOC_W / 2) * view.zoom;
-			const dy = (before.y - DOC_H / 2) * view.zoom;
+			const dx = (before.x - gpu.docW / 2) * view.zoom;
+			const dy = (before.y - gpu.docH / 2) * view.zoom;
 			const rx = dx * cos - dy * sin;
 			const ry = dx * sin + dy * cos;
 			view.x = pivotX - cssW / 2 - rx;
@@ -115,85 +117,63 @@
 		}
 
 		function placeDocAtScreen(docPoint: { x: number; y: number }, screenX: number, screenY: number) {
+			if (!gpu) return;
 			const cos = Math.cos(view.rotation);
 			const sin = Math.sin(view.rotation);
-			const dx = (docPoint.x - DOC_W / 2) * view.zoom;
-			const dy = (docPoint.y - DOC_H / 2) * view.zoom;
+			const dx = (docPoint.x - gpu.docW / 2) * view.zoom;
+			const dy = (docPoint.y - gpu.docH / 2) * view.zoom;
 			const rx = dx * cos - dy * sin;
 			const ry = dx * sin + dy * cos;
 			view.x = screenX - cssW / 2 - rx;
 			view.y = screenY - cssH / 2 - ry;
 		}
 
-		function present() {
-			const dpr = devicePixelRatio || 1;
-			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-			ctx.fillStyle = '#1c1c1d';
-			ctx.fillRect(0, 0, cssW, cssH);
-
-			const cx = cssW / 2;
-			const cy = cssH / 2;
-			ctx.save();
-			ctx.translate(cx + view.x, cy + view.y);
-			ctx.rotate(view.rotation);
-			ctx.scale(view.zoom, view.zoom);
-			ctx.translate(-DOC_W / 2, -DOC_H / 2);
-			ctx.drawImage(doc, 0, 0);
-			if (strokeActive) {
-				ctx.globalAlpha = opacity;
-				ctx.drawImage(stroke, 0, 0);
-			}
-			ctx.restore();
-		}
-
 		function beginStroke() {
-			sctx.clearRect(0, 0, DOC_W, DOC_H);
+			gpu?.beginStroke();
 			strokeActive = true;
 		}
 
 		function endStroke() {
-			if (!strokeActive) return;
-			dctx.save();
-			dctx.globalAlpha = opacity;
-			dctx.drawImage(stroke, 0, 0);
-			dctx.restore();
-			sctx.clearRect(0, 0, DOC_W, DOC_H);
+			if (!strokeActive || !gpu) return;
+			gpu.endStroke(opacity);
 			strokeActive = false;
 			present();
 		}
 
 		function resize() {
-			const dpr = devicePixelRatio || 1;
 			cssW = surface.clientWidth;
 			cssH = surface.clientHeight;
-			surface.width = Math.max(1, Math.round(cssW * dpr));
-			surface.height = Math.max(1, Math.round(cssH * dpr));
+			gpu?.resize(cssW, cssH);
 			present();
 		}
 
-		function paintAt(sx: number, sy: number) {
+		function samplePressure(e: PointerEvent) {
+			return mapPressureCurve(getStrokePressure(e, penState));
+		}
+
+		function paintAt(sx: number, sy: number, pressure: number) {
+			if (!gpu || pressure <= 0) return;
 			const p = screenToDoc(sx, sy);
-			sctx.globalAlpha = 1;
-			sctx.fillStyle = color;
-			sctx.strokeStyle = color;
-			sctx.lineWidth = size * 2;
-			sctx.lineCap = 'round';
-			sctx.lineJoin = 'round';
-
-			if (lastDoc) {
-				sctx.beginPath();
-				sctx.moveTo(lastDoc.x, lastDoc.y);
-				sctx.lineTo(p.x, p.y);
-				sctx.stroke();
-			} else {
-				sctx.beginPath();
-				sctx.arc(p.x, p.y, size, 0, Math.PI * 2);
-				sctx.fill();
-			}
-			lastDoc = p;
+			// `size` is radius in the old 2d path; stamps use diameter
+			gpu.addSample(p.x, p.y, size * 2, pressure, color);
+			gpu.flushStamps(color);
 			present();
 		}
 
+		function paintPointerSamples(e: PointerEvent) {
+			if (!penState.hasPressure && eventLooksLikeRealPressure(e)) {
+				penState.hasPressure = true;
+			}
+
+			const samples =
+				typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+			const events = samples.length > 0 ? samples : [e];
+
+			for (const ce of events) {
+				// Coalesced events are moves; keep type as pointermove for down-override logic
+				paintAt(ce.clientX, ce.clientY, samplePressure(ce));
+			}
+		}
 
 		function wantsRotate(e: PointerEvent) {
 			return alt || e.altKey || rotateKey;
@@ -209,7 +189,6 @@
 				if (touchCount() === 2) {
 					if (drawing || strokeActive) endStroke();
 					drawing = false;
-					lastDoc = null;
 					const [a, b] = touchList();
 					const midX = (a.x + b.x) / 2;
 					const midY = (a.y + b.y) / 2;
@@ -241,11 +220,13 @@
 				return;
 			}
 
-			if (e.button === 0 || e.pointerType === 'touch') {
+			if (e.button === 0 || e.pointerType === 'touch' || e.pointerType === 'pen') {
 				drawing = true;
-				lastDoc = null;
 				beginStroke();
-				paintAt(e.clientX, e.clientY);
+				updateHasPressure(e, penState);
+				penState.prevPressure = 0;
+				// Down pressure is forced near-zero inside getStrokePressure
+				paintAt(e.clientX, e.clientY, samplePressure(e));
 			}
 		}
 
@@ -253,6 +234,8 @@
 			if (e.pointerType === 'touch' && touches[e.pointerId]) {
 				touches[e.pointerId] = { x: e.clientX, y: e.clientY };
 				if (touchCount() === 2 && pinch) {
+					const MIN_Z = 0.05;
+					const MAX_Z = 20;
 					const [a, b] = touchList();
 					const dist = Math.hypot(a.x - b.x, a.y - b.y);
 					const angle = Math.atan2(b.y - a.y, b.x - a.x);
@@ -296,7 +279,10 @@
 				return;
 			}
 
-			if (drawing) paintAt(e.clientX, e.clientY);
+			// Pen lift often sends a trailing move with buttons=0 / pressure=0
+			if (drawing && e.buttons !== 0) {
+				paintPointerSamples(e);
+			}
 		}
 
 		function onPointerUp(e: PointerEvent) {
@@ -307,8 +293,8 @@
 			drawing = false;
 			panning = false;
 			rotating = false;
-			lastDoc = null;
 			lastRotateAngle = null;
+			penState.prevPressure = 0;
 
 			if (surface.hasPointerCapture(e.pointerId)) {
 				surface.releasePointerCapture(e.pointerId);
@@ -329,15 +315,11 @@
 			e.preventDefault();
 		}
 
-		// Non-passive touchstart is what actually kills iOS long-press loupe/selection.
 		function onTouchStart(e: TouchEvent) {
 			e.preventDefault();
 		}
 
-		resize();
-
 		const ro = new ResizeObserver(resize);
-		ro.observe(surface);
 
 		surface.addEventListener('pointerdown', onPointerDown);
 		surface.addEventListener('pointermove', onPointerMove);
@@ -349,8 +331,28 @@
 		surface.addEventListener('touchstart', onTouchStart, { passive: false });
 		window.addEventListener('resize', resize);
 
+		(async () => {
+			try {
+				const painter = await createGpuPaint(surface);
+				if (cancelled) {
+					painter.destroy();
+					return;
+				}
+				gpu = painter;
+				gpuError = null;
+				ro.observe(surface);
+				resize();
+			} catch (err) {
+				if (cancelled) return;
+				gpuError = err instanceof Error ? err.message : 'WebGPU failed to initialize';
+			}
+		})();
+
 		return () => {
+			cancelled = true;
 			ro.disconnect();
+			gpu?.destroy();
+			gpu = null;
 			surface.removeEventListener('pointerdown', onPointerDown);
 			surface.removeEventListener('pointermove', onPointerMove);
 			surface.removeEventListener('pointerup', onPointerUp);
@@ -371,3 +373,11 @@
 	class="fixed inset-0 block h-full w-full touch-none select-none [-webkit-touch-callout:none]"
 	style:background="#1c1c1d"
 ></canvas>
+
+{#if gpuError}
+	<div class="pointer-events-none fixed inset-0 z-20 flex items-center justify-center p-6 text-center">
+		<p class="max-w-md rounded-lg bg-black/70 px-4 py-3 text-sm text-white">
+			{gpuError}
+		</p>
+	</div>
+{/if}

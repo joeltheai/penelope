@@ -2,7 +2,7 @@
 	let {
 		value = $bindable(8),
 		min = 1,
-		max = 100,
+		max = 250,
 		step = 1
 	}: {
 		value?: number;
