@@ -10,3 +10,4 @@ crate/target/
 crate/pkg/
 *.wasm
 !public/**/*.wasm
+.cursor/
