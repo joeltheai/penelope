@@ -1,6 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import cloudflare from '@sveltejs/adapter-cloudflare';
 import { sveltekit } from '@sveltejs/kit/vite';
+import basicSsl from '@vitejs/plugin-basic-ssl';
 import { defineConfig } from 'vite';
 
 /**
@@ -14,6 +15,7 @@ function adapter() {
 
 export default defineConfig({
 	plugins: [
+		basicSsl(),
 		tailwindcss(),
 		sveltekit({
 			compilerOptions: {
@@ -23,5 +25,9 @@ export default defineConfig({
 			},
 			adapter: adapter()
 		})
-	]
+	],
+	server: {
+		// Expose on LAN so iPad can open https://192.168.x.x:5173
+		host: true
+	}
 });
