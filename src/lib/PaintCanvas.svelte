@@ -200,6 +200,10 @@
 		}
 
 		function onPointerDown(e: PointerEvent) {
+			e.preventDefault();
+			const active = document.activeElement;
+			if (active instanceof HTMLElement && active !== surface) active.blur();
+
 			if (e.pointerType === 'touch') {
 				touches[e.pointerId] = { x: e.clientX, y: e.clientY };
 				if (touchCount() === 2) {
@@ -321,6 +325,15 @@
 			e.preventDefault();
 		}
 
+		function onSelectStart(e: Event) {
+			e.preventDefault();
+		}
+
+		// Non-passive touchstart is what actually kills iOS long-press loupe/selection.
+		function onTouchStart(e: TouchEvent) {
+			e.preventDefault();
+		}
+
 		resize();
 
 		const ro = new ResizeObserver(resize);
@@ -332,6 +345,8 @@
 		surface.addEventListener('pointercancel', onPointerUp);
 		surface.addEventListener('wheel', onWheel, { passive: false });
 		surface.addEventListener('contextmenu', onContextMenu);
+		surface.addEventListener('selectstart', onSelectStart);
+		surface.addEventListener('touchstart', onTouchStart, { passive: false });
 		window.addEventListener('resize', resize);
 
 		return () => {
@@ -342,6 +357,8 @@
 			surface.removeEventListener('pointercancel', onPointerUp);
 			surface.removeEventListener('wheel', onWheel);
 			surface.removeEventListener('contextmenu', onContextMenu);
+			surface.removeEventListener('selectstart', onSelectStart);
+			surface.removeEventListener('touchstart', onTouchStart);
 			window.removeEventListener('resize', resize);
 		};
 	});
@@ -351,6 +368,6 @@
 
 <canvas
 	bind:this={canvasEl}
-	class="fixed inset-0 block h-full w-full touch-none"
+	class="fixed inset-0 block h-full w-full touch-none select-none [-webkit-touch-callout:none]"
 	style:background="#1c1c1d"
 ></canvas>
