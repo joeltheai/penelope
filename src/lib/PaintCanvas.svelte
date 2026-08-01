@@ -1,5 +1,9 @@
 <script lang="ts">
-	let { color = $bindable('#1a6cff') }: { color?: string } = $props();
+	let {
+		color = $bindable('#1a6cff'),
+		size = $bindable(8)
+	}: { color?: string; size?: number } = $props();
+
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 
@@ -29,9 +33,9 @@
 
 		const DOC_W = 1024;
 		const DOC_H = 1024;
-		const BRUSH_R = 8;
 		const MIN_Z = 0.05;
 		const MAX_Z = 20;
+
 
 		const doc = document.createElement('canvas');
 		doc.width = DOC_W;
@@ -145,7 +149,7 @@
 			const p = screenToDoc(sx, sy);
 			dctx.fillStyle = color;
 			dctx.strokeStyle = color;
-			dctx.lineWidth = BRUSH_R * 2;
+			dctx.lineWidth = size * 2;
 			dctx.lineCap = 'round';
 			dctx.lineJoin = 'round';
 
@@ -156,12 +160,13 @@
 				dctx.stroke();
 			} else {
 				dctx.beginPath();
-				dctx.arc(p.x, p.y, BRUSH_R, 0, Math.PI * 2);
+				dctx.arc(p.x, p.y, size, 0, Math.PI * 2);
 				dctx.fill();
 			}
 			lastDoc = p;
 			present();
 		}
+
 
 		function wantsRotate(e: PointerEvent) {
 			return alt || e.altKey || rotateKey;
