@@ -5,7 +5,8 @@
 		createPenPressureState,
 		eventLooksLikeRealPressure,
 		getStrokePressure,
-		mapPressureCurve,
+		mapPressureCurveForOpacity,
+		mapPressureCurveForSize,
 		resetStrokePressure,
 		updateHasPressure
 	} from '$lib/penPressure';
@@ -14,8 +15,17 @@
 		color = $bindable('#1a6cff'),
 		size = $bindable(8),
 		opacity = $bindable(1),
-		spacing = $bindable(0.06)
-	}: { color?: string; size?: number; opacity?: number; spacing?: number } = $props();
+		spacing = $bindable(0.06),
+		pressureSize = $bindable(true),
+		pressureOpacity = $bindable(false)
+	}: {
+		color?: string;
+		size?: number;
+		opacity?: number;
+		spacing?: number;
+		pressureSize?: boolean;
+		pressureOpacity?: boolean;
+	} = $props();
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let gpuError = $state<string | null>(null);
@@ -151,15 +161,21 @@
 			present();
 		}
 
-		function samplePressure(e: PointerEvent) {
-			return mapPressureCurve(getStrokePressure(e, penState));
+		function samplePressures(e: PointerEvent) {
+			if (!pressureSize && !pressureOpacity) {
+				return { sizeP: 1, opacP: 1 };
+			}
+			const raw = getStrokePressure(e, penState);
+			return {
+				sizeP: pressureSize ? mapPressureCurveForSize(raw, penState) : 1,
+				opacP: pressureOpacity ? mapPressureCurveForOpacity(raw) : 1
+			};
 		}
 
-		function paintAt(sx: number, sy: number, pressure: number) {
-			if (!gpu || pressure <= 0) return;
+		function paintAt(sx: number, sy: number, sizeP: number, opacP: number) {
+			if (!gpu) return;
 			const p = screenToDoc(sx, sy);
-			// `size` is radius in the old 2d path; stamps use diameter
-			gpu.addSample(p.x, p.y, size * 2, pressure, color, spacing);
+			gpu.addSample(p.x, p.y, size * 2, sizeP, opacP, color, spacing);
 			gpu.flushStamps(color);
 			present();
 		}
@@ -180,9 +196,9 @@
 						Math.hypot(ce.clientX - lastPaintScreen.x, ce.clientY - lastPaintScreen.y)
 					);
 				}
-				const pressure = samplePressure(ce);
+				const { sizeP, opacP } = samplePressures(ce);
 				lastPaintScreen = { x: ce.clientX, y: ce.clientY };
-				paintAt(ce.clientX, ce.clientY, pressure);
+				paintAt(ce.clientX, ce.clientY, sizeP, opacP);
 			}
 		}
 
@@ -237,9 +253,9 @@
 				updateHasPressure(e, penState);
 				resetStrokePressure(penState);
 				lastPaintScreen = null;
-				const pressure = samplePressure(e);
+				const { sizeP, opacP } = samplePressures(e);
 				lastPaintScreen = { x: e.clientX, y: e.clientY };
-				paintAt(e.clientX, e.clientY, pressure);
+				paintAt(e.clientX, e.clientY, sizeP, opacP);
 			}
 		}
 
