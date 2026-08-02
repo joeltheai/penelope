@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { createGpuPaint, type GpuPaint } from '$lib/gpuPaint';
 	import {
+		addStrokeDistance,
 		createPenPressureState,
 		eventLooksLikeRealPressure,
 		getStrokePressure,
 		mapPressureCurve,
+		resetStrokePressure,
 		updateHasPressure
 	} from '$lib/penPressure';
 
@@ -56,6 +58,7 @@
 		let rotatePivot = { x: 0, y: 0 };
 		let lastRotateAngle: number | null = null;
 		const penState = createPenPressureState();
+		let lastPaintScreen: { x: number; y: number } | null = null;
 
 		const touches: Record<number, { x: number; y: number }> = {};
 		let pinch: {
@@ -170,8 +173,15 @@
 			const events = samples.length > 0 ? samples : [e];
 
 			for (const ce of events) {
-				// Coalesced events are moves; keep type as pointermove for down-override logic
-				paintAt(ce.clientX, ce.clientY, samplePressure(ce));
+				if (lastPaintScreen) {
+					addStrokeDistance(
+						penState,
+						Math.hypot(ce.clientX - lastPaintScreen.x, ce.clientY - lastPaintScreen.y)
+					);
+				}
+				const pressure = samplePressure(ce);
+				lastPaintScreen = { x: ce.clientX, y: ce.clientY };
+				paintAt(ce.clientX, ce.clientY, pressure);
 			}
 		}
 
@@ -224,9 +234,11 @@
 				drawing = true;
 				beginStroke();
 				updateHasPressure(e, penState);
-				penState.prevPressure = 0;
-				// Down pressure is forced near-zero inside getStrokePressure
-				paintAt(e.clientX, e.clientY, samplePressure(e));
+				resetStrokePressure(penState);
+				lastPaintScreen = null;
+				const pressure = samplePressure(e);
+				lastPaintScreen = { x: e.clientX, y: e.clientY };
+				paintAt(e.clientX, e.clientY, pressure);
 			}
 		}
 
@@ -294,7 +306,8 @@
 			panning = false;
 			rotating = false;
 			lastRotateAngle = null;
-			penState.prevPressure = 0;
+			resetStrokePressure(penState);
+			lastPaintScreen = null;
 
 			if (surface.hasPointerCapture(e.pointerId)) {
 				surface.releasePointerCapture(e.pointerId);
