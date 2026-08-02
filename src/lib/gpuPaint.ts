@@ -1,5 +1,5 @@
-const DOC_W = 1024;
-const DOC_H = 1024;
+const DOC_W = 2000;
+const DOC_H = 2000;
 const BRUSH_SIZE = 128;
 const MAX_STAMPS_PER_FLUSH = 4096;
 const FLOATS_PER_VERT = 6;
@@ -165,7 +165,14 @@ export type GpuPaint = {
 	resize: (cssW: number, cssH: number) => void;
 	beginStroke: () => void;
 	endStroke: (opacity: number) => void;
-	addSample: (x: number, y: number, brushDiameter: number, pressure: number, color: string) => void;
+	addSample: (
+		x: number,
+		y: number,
+		brushDiameter: number,
+		pressure: number,
+		color: string,
+		spacingFactor?: number
+	) => void;
 	flushStamps: (color: string) => void;
 	present: (view: ViewState, cssW: number, cssH: number, opacity: number, strokeActive: boolean) => void;
 	destroy: () => void;
@@ -409,8 +416,8 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	let lastColor = '#000000';
 	let destroyed = false;
 
-	function spacingFor(size: number) {
-		return Math.max(0.25, size * 0.06);
+	function spacingFor(size: number, spacingFactor: number) {
+		return Math.max(0.25, size * spacingFactor);
 	}
 
 	function queueStamp(x: number, y: number, size: number, pressure: number) {
@@ -502,12 +509,19 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			stampCount = 0;
 		},
 
-		addSample(x: number, y: number, brushDiameter: number, pressure: number, color: string) {
+		addSample(
+			x: number,
+			y: number,
+			brushDiameter: number,
+			pressure: number,
+			color: string,
+			spacingFactor = 0.06
+		) {
 			if (destroyed) return;
 			lastColor = color;
 			if (pressure <= 0) return;
 			const p = Math.min(1, pressure);
-			const spacing = spacingFor(brushDiameter * p);
+			const spacing = spacingFor(brushDiameter * p, spacingFactor);
 
 			if (!lastStamp) {
 				queueStamp(x, y, brushDiameter, p);

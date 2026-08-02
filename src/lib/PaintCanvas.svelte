@@ -13,8 +13,9 @@
 	let {
 		color = $bindable('#1a6cff'),
 		size = $bindable(8),
-		opacity = $bindable(1)
-	}: { color?: string; size?: number; opacity?: number } = $props();
+		opacity = $bindable(1),
+		spacing = $bindable(0.06)
+	}: { color?: string; size?: number; opacity?: number; spacing?: number } = $props();
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let gpuError = $state<string | null>(null);
@@ -158,7 +159,7 @@
 			if (!gpu || pressure <= 0) return;
 			const p = screenToDoc(sx, sy);
 			// `size` is radius in the old 2d path; stamps use diameter
-			gpu.addSample(p.x, p.y, size * 2, pressure, color);
+			gpu.addSample(p.x, p.y, size * 2, pressure, color, spacing);
 			gpu.flushStamps(color);
 			present();
 		}
