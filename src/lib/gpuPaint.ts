@@ -1,3 +1,7 @@
+import strokeWgsl from './shaders/stroke.wgsl?raw';
+import compositeWgsl from './shaders/composite.wgsl?raw';
+import presentWgslSrc from './shaders/present.wgsl?raw';
+
 const DOC_W = 2000;
 const DOC_H = 2000;
 const BRUSH_SIZE = 128;
@@ -5,6 +9,10 @@ const MAX_STAMPS_PER_FLUSH = 4096;
 const FLOATS_PER_VERT = 7;
 const VERTS_PER_STAMP = 6;
 const MAX_VERT_FLOATS = MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP * FLOATS_PER_VERT;
+
+const presentWgsl = presentWgslSrc
+	.replaceAll('__DOC_W__', `${DOC_W}.0`)
+	.replaceAll('__DOC_H__', `${DOC_H}.0`);
 
 // Numeric WebGPU usage flags (TS DOM lib omits the GPU*Usage consts).
 const TEX = {
@@ -27,131 +35,6 @@ const CORNERS: [number, number][] = [
 	[1, 1],
 	[-1, 1]
 ];
-
-const STROKE_WGSL = /* wgsl */ `
-struct Uniforms {
-  resolution: vec2f,
-  _pad0: vec2f,
-  color: vec4f,
-}
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var brushTex: texture_2d<f32>;
-@group(0) @binding(2) var brushSamp: sampler;
-
-struct VSIn {
-  @location(0) pos: vec2f,
-  @location(1) corner: vec2f,
-  @location(2) size: f32,
-  @location(3) sizePressure: f32,
-  @location(4) opacityPressure: f32,
-}
-struct VSOut {
-  @builtin(position) position: vec4f,
-  @location(0) uv: vec2f,
-  @location(1) opacityPressure: f32,
-}
-
-@vertex
-fn vs(input: VSIn) -> VSOut {
-  var out: VSOut;
-  let half = input.size * 0.5 * input.sizePressure;
-  let pixel = input.pos + input.corner * half;
-  let clip = (pixel / u.resolution) * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
-  out.position = vec4f(clip, 0.0, 1.0);
-  out.uv = input.corner * 0.5 + 0.5;
-  out.opacityPressure = input.opacityPressure;
-  return out;
-}
-
-@fragment
-fn fs(input: VSOut) -> @location(0) vec4f {
-  let mask = textureSample(brushTex, brushSamp, input.uv).a;
-  let a = mask * u.color.a * input.opacityPressure;
-  return vec4f(u.color.rgb * a, a);
-}
-`;
-
-const COMPOSITE_WGSL = /* wgsl */ `
-struct Uniforms {
-  opacity: f32,
-  _pad0: f32,
-  _pad1: f32,
-  _pad2: f32,
-}
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var strokeTex: texture_2d<f32>;
-@group(0) @binding(2) var samp: sampler;
-
-struct VSOut {
-  @builtin(position) position: vec4f,
-  @location(0) uv: vec2f,
-}
-
-@vertex
-fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
-  var out: VSOut;
-  let x = f32(vi == 1u || vi == 2u || vi == 4u);
-  let y = f32(vi == 2u || vi == 4u || vi == 5u);
-  out.position = vec4f(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-  out.uv = vec2f(x, y);
-  return out;
-}
-
-@fragment
-fn fs(input: VSOut) -> @location(0) vec4f {
-  let s = textureSample(strokeTex, samp, input.uv);
-  return vec4f(s.rgb * u.opacity, s.a * u.opacity);
-}
-`;
-
-const PRESENT_WGSL = /* wgsl */ `
-struct Uniforms {
-  // column-major 3x3 affine: doc px -> clip
-  m0: vec3f,
-  _pad0: f32,
-  m1: vec3f,
-  _pad1: f32,
-  m2: vec3f,
-  _pad2: f32,
-  strokeOpacity: f32,
-  strokeActive: f32,
-  _pad3: vec2f,
-}
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var docTex: texture_2d<f32>;
-@group(0) @binding(2) var strokeTex: texture_2d<f32>;
-@group(0) @binding(3) var samp: sampler;
-
-struct VSOut {
-  @builtin(position) position: vec4f,
-  @location(0) uv: vec2f,
-}
-
-@vertex
-fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
-  var out: VSOut;
-  let x = f32(vi == 1u || vi == 2u || vi == 4u);
-  let y = f32(vi == 2u || vi == 4u || vi == 5u);
-  let doc = vec3f(x * ${DOC_W}.0, y * ${DOC_H}.0, 1.0);
-  let clip = vec3f(
-    dot(u.m0, doc),
-    dot(u.m1, doc),
-    dot(u.m2, doc),
-  );
-  out.position = vec4f(clip.xy, 0.0, 1.0);
-  out.uv = vec2f(x, y);
-  return out;
-}
-
-@fragment
-fn fs(input: VSOut) -> @location(0) vec4f {
-  let d = textureSample(docTex, samp, input.uv);
-  let s = textureSample(strokeTex, samp, input.uv);
-  let a = s.a * u.strokeOpacity * u.strokeActive;
-  let rgb = s.rgb * (u.strokeOpacity * u.strokeActive) + d.rgb * (1.0 - a);
-  return vec4f(rgb, 1.0);
-}
-`;
 
 export type ViewState = {
 	x: number;
@@ -284,9 +167,9 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 
 	const linearSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
-	const strokeModule = device.createShaderModule({ code: STROKE_WGSL });
-	const compositeModule = device.createShaderModule({ code: COMPOSITE_WGSL });
-	const presentModule = device.createShaderModule({ code: PRESENT_WGSL });
+	const strokeModule = device.createShaderModule({ code: strokeWgsl });
+	const compositeModule = device.createShaderModule({ code: compositeWgsl });
+	const presentModule = device.createShaderModule({ code: presentWgsl });
 
 	const strokePipeline = device.createRenderPipeline({
 		layout: 'auto',
