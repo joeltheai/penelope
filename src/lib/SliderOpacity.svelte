@@ -13,6 +13,24 @@
 
 	let previewing = $state(false);
 
+	let percent = $derived(((value - min) / (max - min)) * 100);
+
+	function clamp(n: number, lo: number, hi: number) {
+		return Math.min(hi, Math.max(lo, n));
+	}
+
+	function snap(n: number) {
+		const snapped = Math.round((n - min) / step) * step + min;
+		const decimals = String(step).includes('.') ? String(step).split('.')[1].length : 0;
+		return Number(clamp(snapped, min, max).toFixed(decimals));
+	}
+
+	function valueFromClientX(clientX: number, el: HTMLElement) {
+		const rect = el.getBoundingClientRect();
+		const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
+		return snap(min + ratio * (max - min));
+	}
+
 	function showPreview() {
 		previewing = true;
 	}
@@ -20,40 +38,84 @@
 	function hidePreview() {
 		previewing = false;
 	}
+
+	function onPointerDown(e: PointerEvent) {
+		if (e.button !== 0) return;
+		const el = e.currentTarget as HTMLElement;
+		showPreview();
+		value = valueFromClientX(e.clientX, el);
+		el.setPointerCapture(e.pointerId);
+	}
+
+	function onPointerMove(e: PointerEvent) {
+		const el = e.currentTarget as HTMLElement;
+		if (!el.hasPointerCapture(e.pointerId)) return;
+		value = valueFromClientX(e.clientX, el);
+	}
+
+	function onPointerUp(e: PointerEvent) {
+		const el = e.currentTarget as HTMLElement;
+		if (el.hasPointerCapture(e.pointerId)) {
+			el.releasePointerCapture(e.pointerId);
+		}
+		hidePreview();
+	}
+
+	function onKeyDown(e: KeyboardEvent) {
+		let next = value;
+		switch (e.key) {
+			case 'ArrowLeft':
+			case 'ArrowDown':
+				next = value - step;
+				break;
+			case 'ArrowRight':
+			case 'ArrowUp':
+				next = value + step;
+				break;
+			case 'Home':
+				next = min;
+				break;
+			case 'End':
+				next = max;
+				break;
+			case 'PageDown':
+				next = value - step * 10;
+				break;
+			case 'PageUp':
+				next = value + step * 10;
+				break;
+			default:
+				return;
+		}
+		e.preventDefault();
+		value = snap(next);
+	}
 </script>
 
-<label class="flex items-center py-3">
-	<input
-		type="range"
+<div class="flex items-center py-3">
+	<div
+		role="slider"
+		tabindex="0"
 		aria-label="Brush opacity"
-		{min}
-		{max}
-		{step}
-		bind:value
-		onpointerdown={showPreview}
-		onpointerup={hidePreview}
-		onpointercancel={hidePreview}
+		aria-valuemin={min}
+		aria-valuemax={max}
+		aria-valuenow={value}
+		class="relative h-10 w-32 cursor-pointer touch-none rounded-xl border border-white/50 bg-white/10 outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+		onpointerdown={onPointerDown}
+		onpointermove={onPointerMove}
+		onpointerup={onPointerUp}
+		onpointercancel={onPointerUp}
 		onfocus={showPreview}
 		onblur={hidePreview}
-		class="h-6 w-32 cursor-pointer appearance-none bg-transparent
-			[&::-webkit-slider-runnable-track]:h-1.5
-			[&::-webkit-slider-runnable-track]:rounded-full
-			[&::-webkit-slider-runnable-track]:bg-white/50
-			[&::-webkit-slider-thumb]:relative
-			[&::-webkit-slider-thumb]:-mt-1
-			[&::-webkit-slider-thumb]:size-3.5
-			[&::-webkit-slider-thumb]:appearance-none
-			[&::-webkit-slider-thumb]:rounded-full
-			[&::-webkit-slider-thumb]:bg-white
-			[&::-moz-range-track]:h-1.5
-			[&::-moz-range-track]:rounded-full
-			[&::-moz-range-track]:bg-white/50
-			[&::-moz-range-thumb]:size-3.5
-			[&::-moz-range-thumb]:rounded-full
-			[&::-moz-range-thumb]:border-0
-			[&::-moz-range-thumb]:bg-white"
-	/>
-</label>
+		onkeydown={onKeyDown}
+	>
+		<div
+			class="pointer-events-none absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-white"
+			style:left="{percent}%"
+			aria-hidden="true"
+		></div>
+	</div>
+</div>
 
 {#if previewing}
 	<div
