@@ -412,7 +412,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	clearTexture(strokeTex, { r: 0, g: 0, b: 0, a: 0 });
 
 	let stampCount = 0;
-	let lastStamp: { x: number; y: number } | null = null;
+	let lastStamp: { x: number; y: number; pressure: number } | null = null;
 	let lastColor = '#000000';
 	let destroyed = false;
 
@@ -525,7 +525,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 
 			if (!lastStamp) {
 				queueStamp(x, y, brushDiameter, p);
-				lastStamp = { x, y };
+				lastStamp = { x, y, pressure: p };
 				if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
 				return;
 			}
@@ -535,13 +535,16 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			const dist = Math.hypot(dx, dy);
 			if (dist < spacing) return;
 
+			const prevP = lastStamp.pressure;
 			const steps = Math.floor(dist / spacing);
 			for (let i = 1; i <= steps; i++) {
 				const t = i / steps;
-				queueStamp(lastStamp.x + dx * t, lastStamp.y + dy * t, brushDiameter, p);
+				// Lerp pressure along the segment so size doesn't stair-step
+				const pi = prevP + (p - prevP) * t;
+				queueStamp(lastStamp.x + dx * t, lastStamp.y + dy * t, brushDiameter, pi);
 				if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
 			}
-			lastStamp = { x, y };
+			lastStamp = { x, y, pressure: p };
 		},
 
 		flushStamps(color: string) {

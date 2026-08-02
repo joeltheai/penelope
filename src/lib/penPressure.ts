@@ -1,14 +1,14 @@
-// pressure stuff om its annoying
 /**
- * Pen pressure pipeline inspired by Procreate + Krita:
+ * Pressure pipeline inspired by Krita + Procreate.
  *
- * - Procreate "Pressure" stabilize: moving average of pressure; rises slowly,
- *   falls faster so an opening spike settles instead of locking in a fat dab.
- * - Krita delay / stroke-start ramp: early dabs ease up from near-zero over
- *   the first stretch of the stroke, so Safari's fake mid pressure can't
- *   stamp a full-size opener.
+ * Krita (kis_tool_freehand_helper.cpp — stabilizeSensors):
+ *   Uniform running average over a deque of recent samples
+ *   (incremental mean with k = (i-1)/i).
  *
- * Also rejects Pointer Events placeholders (0 / 0.5 / known junk).
+ * Procreate "Pressure" stabilize:
+ *   Heavy low-pass so size eases instead of stair-stepping with each event.
+ *
+ * Plus: stroke-start ramp so Safari's fake mid pressure can't open fat.
  */
 
 export type PenPressureState = {
@@ -16,9 +16,18 @@ export type PenPressureState = {
 	usingPen: boolean;
 	prevPressure: number;
 	pressure: number;
-	/** Screen-space distance traveled since stroke start (for start ramp). */
 	strokeDist: number;
+	/** Recent raw pressures for Krita-style uniform averaging. */
+	history: number[];
+	lastSmoothTime: number;
 };
+
+/** How many recent samples to average (Krita stabilizer deque depth). */
+const HISTORY_SIZE = 14;
+/** Time-constant for secondary EMA (ms) — Procreate-like settle. */
+const SMOOTH_TAU_MS = 55;
+/** Screen px over which stroke-start ramp opens (Krita delay-zone feel). */
+const RAMP_PX = 48;
 
 export function createPenPressureState(): PenPressureState {
 	return {
@@ -26,15 +35,18 @@ export function createPenPressureState(): PenPressureState {
 		usingPen: false,
 		prevPressure: 0,
 		pressure: 1,
-		strokeDist: 0
+		strokeDist: 0,
+		history: [],
+		lastSmoothTime: 0
 	};
 }
 
-/** Call at the start of each stroke. */
 export function resetStrokePressure(state: PenPressureState) {
 	state.prevPressure = 0;
 	state.pressure = 1;
 	state.strokeDist = 0;
+	state.history.length = 0;
+	state.lastSmoothTime = 0;
 }
 
 export function addStrokeDistance(state: PenPressureState, distPx: number) {
@@ -80,7 +92,6 @@ function readRawPressure(e: PointerEvent, state: PenPressureState) {
 		pressure = 'pressure' in e ? e.pressure : (state.pressure ?? 1);
 
 		if (pressure === 0.07999999821186066) pressure = 0.01;
-		// Pointer Events mid placeholder while tip is down
 		if (pressure === 0.5) {
 			pressure = state.prevPressure > 0 ? state.prevPressure : 0.01;
 		}
@@ -93,38 +104,63 @@ function readRawPressure(e: PointerEvent, state: PenPressureState) {
 }
 
 /**
- * Procreate-style Pressure stabilize: slow to grow, fast to shrink.
- * Kills the common "opens fat, then settles" Safari spike.
+ * Krita stabilizeSensors: uniform average over the last HISTORY_SIZE samples.
+ * Same recurrence as getStabilizedPaintInfo: k = (i-1)/i.
  */
-function smoothPressure(pressure: number, prevPressure: number, e: PointerEvent) {
-	if (prevPressure <= 0 || e.type === 'pointerdown') return pressure;
-	const rising = pressure > prevPressure;
-	// Higher factor = more weight on previous (more inertia)
-	const factor = rising ? 0.82 : 0.28;
-	return pressure * (1 - factor) + prevPressure * factor;
+function uniformAverage(history: number[]): number {
+	if (history.length === 0) return 0;
+	let avg = history[0]!;
+	for (let i = 1; i < history.length; i++) {
+		const k = i / (i + 1);
+		avg = avg * k + history[i]! * (1 - k);
+	}
+	return avg;
 }
 
 /**
- * Krita-like stroke-start ramp: over the first ~RAMP_PX of motion, blend from
- * a tiny opener toward the smoothed pressure. At rest (dist 0) → near-zero.
+ * Time-based EMA on top of the window average (frame-rate independent).
+ * Rise is slower than fall so opening spikes settle quickly.
  */
+function timeEma(target: number, prev: number, state: PenPressureState, isDown: boolean) {
+	if (prev <= 0 || isDown) return target;
+
+	const now = performance.now();
+	const dt = state.lastSmoothTime > 0 ? Math.min(64, Math.max(0, now - state.lastSmoothTime)) : 16;
+	state.lastSmoothTime = now;
+
+	const rising = target > prev;
+	const tau = rising ? SMOOTH_TAU_MS * 1.55 : SMOOTH_TAU_MS * 0.65;
+	const alpha = 1 - Math.exp(-dt / tau);
+	return prev + (target - prev) * alpha;
+}
+
+/** Krita delay-zone style: ease from tiny → full over first RAMP_PX of motion. */
 function applyStartRamp(pressure: number, state: PenPressureState) {
 	if (!state.usingPen) return pressure;
-	const RAMP_PX = 56;
 	const t = Math.min(1, state.strokeDist / RAMP_PX);
-	const w = t * t * (3 - 2 * t); // smoothstep
+	const w = t * t * (3 - 2 * t);
 	return pressure * w + 0.02 * (1 - w);
 }
 
-function applyDownOverride(e: PointerEvent, pressure: number) {
-	if (e.type === 'pointerdown') return 0.02;
-	return pressure;
-}
-
 export function getStrokePressure(e: PointerEvent, state: PenPressureState) {
-	let pressure = readRawPressure(e, state);
-	pressure = smoothPressure(pressure, state.prevPressure, e);
-	pressure = applyDownOverride(e, pressure);
+	const isDown = e.type === 'pointerdown';
+	let raw = readRawPressure(e, state);
+
+	if (isDown) {
+		raw = 0.02;
+		state.history.length = 0;
+		state.history.push(raw);
+		state.lastSmoothTime = performance.now();
+		state.prevPressure = raw;
+		state.pressure = raw;
+		return applyStartRamp(raw, state);
+	}
+
+	state.history.push(raw);
+	while (state.history.length > HISTORY_SIZE) state.history.shift();
+
+	let pressure = uniformAverage(state.history);
+	pressure = timeEma(pressure, state.prevPressure, state, false);
 	pressure = applyStartRamp(pressure, state);
 
 	if (pressure <= 0) pressure = 0.02;
