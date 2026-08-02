@@ -2,7 +2,7 @@ const DOC_W = 2000;
 const DOC_H = 2000;
 const BRUSH_SIZE = 128;
 const MAX_STAMPS_PER_FLUSH = 4096;
-const FLOATS_PER_VERT = 6;
+const FLOATS_PER_VERT = 7;
 const VERTS_PER_STAMP = 6;
 const MAX_VERT_FLOATS = MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP * FLOATS_PER_VERT;
 
@@ -42,30 +42,31 @@ struct VSIn {
   @location(0) pos: vec2f,
   @location(1) corner: vec2f,
   @location(2) size: f32,
-  @location(3) pressure: f32,
+  @location(3) sizePressure: f32,
+  @location(4) opacityPressure: f32,
 }
 struct VSOut {
   @builtin(position) position: vec4f,
   @location(0) uv: vec2f,
-  @location(1) pressure: f32,
+  @location(1) opacityPressure: f32,
 }
 
 @vertex
 fn vs(input: VSIn) -> VSOut {
   var out: VSOut;
-  let half = input.size * 0.5 * input.pressure;
+  let half = input.size * 0.5 * input.sizePressure;
   let pixel = input.pos + input.corner * half;
   let clip = (pixel / u.resolution) * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
   out.position = vec4f(clip, 0.0, 1.0);
   out.uv = input.corner * 0.5 + 0.5;
-  out.pressure = input.pressure;
+  out.opacityPressure = input.opacityPressure;
   return out;
 }
 
 @fragment
 fn fs(input: VSOut) -> @location(0) vec4f {
   let mask = textureSample(brushTex, brushSamp, input.uv).a;
-  let a = mask * u.color.a;
+  let a = mask * u.color.a * input.opacityPressure;
   return vec4f(u.color.rgb * a, a);
 }
 `;
@@ -169,7 +170,8 @@ export type GpuPaint = {
 		x: number,
 		y: number,
 		brushDiameter: number,
-		pressure: number,
+		sizePressure: number,
+		opacityPressure: number,
 		color: string,
 		spacingFactor?: number
 	) => void;
@@ -211,7 +213,15 @@ function makeBrushPixels(size: number): Uint8Array {
 	return pixels;
 }
 
-function appendStamp(out: Float32Array, offset: number, x: number, y: number, size: number, pressure: number) {
+function appendStamp(
+	out: Float32Array,
+	offset: number,
+	x: number,
+	y: number,
+	size: number,
+	sizePressure: number,
+	opacityPressure: number
+) {
 	let o = offset;
 	for (const [cx, cy] of CORNERS) {
 		out[o++] = x;
@@ -219,7 +229,8 @@ function appendStamp(out: Float32Array, offset: number, x: number, y: number, si
 		out[o++] = cx;
 		out[o++] = cy;
 		out[o++] = size;
-		out[o++] = pressure;
+		out[o++] = sizePressure;
+		out[o++] = opacityPressure;
 	}
 	return o;
 }
@@ -289,7 +300,8 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 						{ shaderLocation: 0, offset: 0, format: 'float32x2' },
 						{ shaderLocation: 1, offset: 8, format: 'float32x2' },
 						{ shaderLocation: 2, offset: 16, format: 'float32' },
-						{ shaderLocation: 3, offset: 20, format: 'float32' }
+						{ shaderLocation: 3, offset: 20, format: 'float32' },
+						{ shaderLocation: 4, offset: 24, format: 'float32' }
 					]
 				}
 			]
@@ -300,9 +312,12 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			targets: [
 				{
 					format: 'rgba8unorm',
+					// Krita "wash" / stroke opacity: dabs take max coverage instead of
+					// stacking (source-over). Crossing yourself in one stroke won't
+					// keep darkening — only a new stroke after lift can layer.
 					blend: {
-						color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-						alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
+						color: { srcFactor: 'one', dstFactor: 'one', operation: 'max' },
+						alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'max' }
 					}
 				}
 			]
@@ -412,7 +427,12 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	clearTexture(strokeTex, { r: 0, g: 0, b: 0, a: 0 });
 
 	let stampCount = 0;
-	let lastStamp: { x: number; y: number; pressure: number } | null = null;
+	let lastStamp: {
+		x: number;
+		y: number;
+		sizePressure: number;
+		opacityPressure: number;
+	} | null = null;
 	let lastColor = '#000000';
 	let destroyed = false;
 
@@ -420,10 +440,16 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		return Math.max(0.25, size * spacingFactor);
 	}
 
-	function queueStamp(x: number, y: number, size: number, pressure: number) {
+	function queueStamp(
+		x: number,
+		y: number,
+		size: number,
+		sizePressure: number,
+		opacityPressure: number
+	) {
 		if (stampCount >= MAX_STAMPS_PER_FLUSH) return;
 		const offset = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
-		appendStamp(vertexCpu, offset, x, y, size, pressure);
+		appendStamp(vertexCpu, offset, x, y, size, sizePressure, opacityPressure);
 		stampCount++;
 	}
 
@@ -513,19 +539,21 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			x: number,
 			y: number,
 			brushDiameter: number,
-			pressure: number,
+			sizePressure: number,
+			opacityPressure: number,
 			color: string,
 			spacingFactor = 0.06
 		) {
 			if (destroyed) return;
 			lastColor = color;
-			if (pressure <= 0) return;
-			const p = Math.min(1, pressure);
-			const spacing = spacingFor(brushDiameter * p, spacingFactor);
+			const sizeP = Math.min(1, Math.max(0, sizePressure));
+			const opacP = Math.min(1, Math.max(0, opacityPressure));
+			if (sizeP <= 0 && opacP <= 0) return;
+			const spacing = spacingFor(brushDiameter * Math.max(sizeP, 0.05), spacingFactor);
 
 			if (!lastStamp) {
-				queueStamp(x, y, brushDiameter, p);
-				lastStamp = { x, y, pressure: p };
+				queueStamp(x, y, brushDiameter, sizeP, opacP);
+				lastStamp = { x, y, sizePressure: sizeP, opacityPressure: opacP };
 				if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
 				return;
 			}
@@ -535,16 +563,21 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			const dist = Math.hypot(dx, dy);
 			if (dist < spacing) return;
 
-			const prevP = lastStamp.pressure;
+			const prevSizeP = lastStamp.sizePressure;
+			const prevOpacP = lastStamp.opacityPressure;
 			const steps = Math.floor(dist / spacing);
 			for (let i = 1; i <= steps; i++) {
 				const t = i / steps;
-				// Lerp pressure along the segment so size doesn't stair-step
-				const pi = prevP + (p - prevP) * t;
-				queueStamp(lastStamp.x + dx * t, lastStamp.y + dy * t, brushDiameter, pi);
+				queueStamp(
+					lastStamp.x + dx * t,
+					lastStamp.y + dy * t,
+					brushDiameter,
+					prevSizeP + (sizeP - prevSizeP) * t,
+					prevOpacP + (opacP - prevOpacP) * t
+				);
 				if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
 			}
-			lastStamp = { x, y, pressure: p };
+			lastStamp = { x, y, sizePressure: sizeP, opacityPressure: opacP };
 		},
 
 		flushStamps(color: string) {
