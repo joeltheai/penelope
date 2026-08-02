@@ -1,6 +1,6 @@
 import strokeWgsl from './shaders/stroke.wgsl?raw';
 import compositeWgsl from './shaders/composite.wgsl?raw';
-import presentWgslSrc from './shaders/present.wgsl?raw';
+import presentWgsl from './shaders/present.wgsl?raw';
 
 const DOC_W = 2000;
 const DOC_H = 2000;
@@ -9,10 +9,6 @@ const MAX_STAMPS_PER_FLUSH = 4096;
 const FLOATS_PER_VERT = 7;
 const VERTS_PER_STAMP = 6;
 const MAX_VERT_FLOATS = MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP * FLOATS_PER_VERT;
-
-const presentWgsl = presentWgslSrc
-	.replaceAll('__DOC_W__', `${DOC_W}.0`)
-	.replaceAll('__DOC_H__', `${DOC_H}.0`);
 
 // Numeric WebGPU usage flags (TS DOM lib omits the GPU*Usage consts).
 const TEX = {
@@ -508,6 +504,8 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			u[10] = 1;
 			u[12] = opacity;
 			u[13] = strokeActive ? 1 : 0;
+			u[14] = DOC_W;
+			u[15] = DOC_H;
 			device.queue.writeBuffer(presentUniformBuf, 0, u);
 
 			const encoder = device.createCommandEncoder();

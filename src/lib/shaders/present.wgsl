@@ -8,7 +8,7 @@ struct Uniforms {
   _pad2: f32,
   strokeOpacity: f32,
   strokeActive: f32,
-  _pad3: vec2f,
+  docSize: vec2f,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var docTex: texture_2d<f32>;
@@ -25,8 +25,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
   var out: VSOut;
   let x = f32(vi == 1u || vi == 2u || vi == 4u);
   let y = f32(vi == 2u || vi == 4u || vi == 5u);
-  // __DOC_W__ / __DOC_H__ replaced at import time to match DOC_W / DOC_H
-  let doc = vec3f(x * __DOC_W__, y * __DOC_H__, 1.0);
+  let doc = vec3f(x * u.docSize.x, y * u.docSize.y, 1.0);
   let clip = vec3f(
     dot(u.m0, doc),
     dot(u.m1, doc),
