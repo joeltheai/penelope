@@ -8,9 +8,18 @@
 	let size = $state(8);
 	let opacity = $state(1);
 	let spacing = $state(0.06);
+	let pressureSize = $state(true);
+	let pressureOpacity = $state(false);
 </script>
 
-<PaintCanvas bind:color bind:size bind:opacity bind:spacing />
+<PaintCanvas
+	bind:color
+	bind:size
+	bind:opacity
+	bind:spacing
+	bind:pressureSize
+	bind:pressureOpacity
+/>
 
 <div class="fixed top-4 right-4 z-10">
 	<input
@@ -26,4 +35,22 @@
 	<SliderSize bind:value={size} />
 	<SliderOpacity bind:value={opacity} />
 	<SliderSpacing bind:value={spacing} />
+	<button
+		type="button"
+		class="mt-1 rounded-md px-2.5 py-1.5 text-left text-xs font-medium tracking-wide text-white/80 transition
+			{pressureSize ? 'bg-white/15 hover:bg-white/25' : 'bg-white/40 text-black hover:bg-white/50'}"
+		aria-pressed={!pressureSize}
+		onclick={() => (pressureSize = !pressureSize)}
+	>
+		{pressureSize ? 'Pressure → size' : 'Fixed size'}
+	</button>
+	<button
+		type="button"
+		class="rounded-md px-2.5 py-1.5 text-left text-xs font-medium tracking-wide text-white/80 transition
+			{pressureOpacity ? 'bg-white/15 hover:bg-white/25' : 'bg-white/40 text-black hover:bg-white/50'}"
+		aria-pressed={!pressureOpacity}
+		onclick={() => (pressureOpacity = !pressureOpacity)}
+	>
+		{pressureOpacity ? 'Pressure → opacity' : 'Fixed opacity'}
+	</button>
 </div>
