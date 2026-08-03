@@ -11,13 +11,18 @@
 		updateHasPressure
 	} from '$lib/penPressure';
 
+	type HistoryApi = { undo: () => void; redo: () => void };
+
 	let {
 		color = $bindable('#1a6cff'),
 		size = $bindable(8),
 		opacity = $bindable(1),
 		spacing = $bindable(0.005),
 		pressureSize = $bindable(false),
-		pressureOpacity = $bindable(true)
+		pressureOpacity = $bindable(true),
+		canUndo = $bindable(false),
+		canRedo = $bindable(false),
+		historyApi = $bindable(null as null | HistoryApi)
 	}: {
 		color?: string;
 		size?: number;
@@ -25,6 +30,9 @@
 		spacing?: number;
 		pressureSize?: boolean;
 		pressureOpacity?: boolean;
+		canUndo?: boolean;
+		canRedo?: boolean;
+		historyApi?: null | HistoryApi;
 	} = $props();
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -34,6 +42,16 @@
 	let alt = false;
 	let rotateKey = false;
 
+	let undoFn: (() => void) | null = null;
+	let redoFn: (() => void) | null = null;
+
+	function isEditableTarget(target: EventTarget | null) {
+		if (!(target instanceof HTMLElement)) return false;
+		const tag = target.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+		return target.isContentEditable;
+	}
+
 	function onKeyDown(e: KeyboardEvent) {
 		if (e.code === 'Space') {
 			e.preventDefault();
@@ -41,6 +59,19 @@
 		}
 		if (e.code === 'AltLeft' || e.code === 'AltRight') alt = true;
 		if (e.code === 'KeyR') rotateKey = true;
+
+		const mod = e.metaKey || e.ctrlKey;
+		if (!mod || isEditableTarget(e.target)) return;
+
+		if (e.code === 'KeyZ' && !e.shiftKey) {
+			e.preventDefault();
+			undoFn?.();
+			return;
+		}
+		if ((e.code === 'KeyZ' && e.shiftKey) || e.code === 'KeyY') {
+			e.preventDefault();
+			redoFn?.();
+		}
 	}
 
 	function onKeyUp(e: KeyboardEvent) {
@@ -148,11 +179,37 @@
 			strokeActive = true;
 		}
 
+		function syncHistoryFlags() {
+			if (!gpu) {
+				canUndo = false;
+				canRedo = false;
+				return;
+			}
+			canUndo = gpu.canUndo();
+			canRedo = gpu.canRedo();
+		}
+
+		function runUndo() {
+			if (!gpu || drawing || strokeActive) return;
+			gpu.undo();
+			present();
+			syncHistoryFlags();
+		}
+
+		function runRedo() {
+			if (!gpu || drawing || strokeActive) return;
+			gpu.redo();
+			present();
+			syncHistoryFlags();
+		}
+
 		function endStroke() {
 			if (!strokeActive || !gpu) return;
+			gpu.checkpoint();
 			gpu.endStroke(opacity);
 			strokeActive = false;
 			present();
+			syncHistoryFlags();
 		}
 
 		/** Zoom so the full document fits in the viewport (centered). */
@@ -388,6 +445,10 @@
 				}
 				gpu = painter;
 				gpuError = null;
+				undoFn = runUndo;
+				redoFn = runRedo;
+				historyApi = { undo: runUndo, redo: runRedo };
+				syncHistoryFlags();
 				ro.observe(surface);
 				resize();
 			} catch (err) {
@@ -398,6 +459,11 @@
 
 		return () => {
 			cancelled = true;
+			undoFn = null;
+			redoFn = null;
+			historyApi = null;
+			canUndo = false;
+			canRedo = false;
 			ro.disconnect();
 			gpu?.destroy();
 			gpu = null;

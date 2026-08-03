@@ -7,6 +7,8 @@ const MAX_STAMPS_PER_FLUSH = 4096;
 const FLOATS_PER_VERT = 7;
 const VERTS_PER_STAMP = 6;
 const MAX_VERT_FLOATS = MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP * FLOATS_PER_VERT;
+/** Max completed strokes kept for undo (~16 MB RGBA each). */
+const MAX_HISTORY = 50;
 
 const CORNERS: [number, number][] = [
 	[-1, -1],
@@ -69,6 +71,12 @@ export type GpuPaint = {
 	resize: (cssW: number, cssH: number) => void;
 	beginStroke: () => void;
 	endStroke: (opacity: number) => void;
+	/** Snapshot the document before the next stroke is committed. Clears redo. */
+	checkpoint: () => void;
+	undo: () => boolean;
+	redo: () => boolean;
+	canUndo: () => boolean;
+	canRedo: () => boolean;
 	addSample: (
 		x: number,
 		y: number,
@@ -381,6 +389,31 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	let lastColor = '#000000';
 	let destroyed = false;
 
+	type HistoryTex = typeof docTex;
+	const historyPool: HistoryTex[] = [];
+	const undoStack: HistoryTex[] = [];
+	const redoStack: HistoryTex[] = [];
+
+	function createHistoryTex(): HistoryTex {
+		return root
+			.createTexture({ size: [DOC_W, DOC_H], format: 'rgba8unorm' })
+			.$usage('sampled', 'render');
+	}
+
+	function acquireHistoryTex(): HistoryTex {
+		return historyPool.pop() ?? createHistoryTex();
+	}
+
+	function releaseHistoryTex(tex: HistoryTex) {
+		historyPool.push(tex);
+	}
+
+	function clearRedoStack() {
+		while (redoStack.length > 0) {
+			releaseHistoryTex(redoStack.pop()!);
+		}
+	}
+
 	function spacingFor(size: number, spacingFactor: number) {
 		return Math.max(0.25, size * spacingFactor);
 	}
@@ -455,6 +488,47 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			strokeTex.clear();
 			lastStamp = null;
 			stampCount = 0;
+		},
+
+		checkpoint() {
+			if (destroyed) return;
+			clearRedoStack();
+			const snap = acquireHistoryTex();
+			snap.copyFrom(docTex);
+			undoStack.push(snap);
+			while (undoStack.length > MAX_HISTORY) {
+				releaseHistoryTex(undoStack.shift()!);
+			}
+		},
+
+		undo() {
+			if (destroyed || undoStack.length === 0) return false;
+			const current = acquireHistoryTex();
+			current.copyFrom(docTex);
+			redoStack.push(current);
+			const prev = undoStack.pop()!;
+			docTex.copyFrom(prev);
+			releaseHistoryTex(prev);
+			return true;
+		},
+
+		redo() {
+			if (destroyed || redoStack.length === 0) return false;
+			const current = acquireHistoryTex();
+			current.copyFrom(docTex);
+			undoStack.push(current);
+			const next = redoStack.pop()!;
+			docTex.copyFrom(next);
+			releaseHistoryTex(next);
+			return true;
+		},
+
+		canUndo() {
+			return !destroyed && undoStack.length > 0;
+		},
+
+		canRedo() {
+			return !destroyed && redoStack.length > 0;
 		},
 
 		addSample(
@@ -568,6 +642,12 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 
 		destroy() {
 			destroyed = true;
+			for (const tex of undoStack) tex.destroy();
+			for (const tex of redoStack) tex.destroy();
+			for (const tex of historyPool) tex.destroy();
+			undoStack.length = 0;
+			redoStack.length = 0;
+			historyPool.length = 0;
 			root.destroy();
 		}
 	};

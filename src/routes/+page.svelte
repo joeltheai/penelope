@@ -10,6 +10,9 @@
 	let spacing = $state(0.005);
 	let pressureSize = $state(false);
 	let pressureOpacity = $state(true);
+	let canUndo = $state(false);
+	let canRedo = $state(false);
+	let historyApi = $state<null | { undo: () => void; redo: () => void }>(null);
 </script>
 
 <PaintCanvas
@@ -19,6 +22,9 @@
 	bind:spacing
 	bind:pressureSize
 	bind:pressureOpacity
+	bind:canUndo
+	bind:canRedo
+	bind:historyApi
 />
 
 <div class="fixed top-4 right-4 z-10">
@@ -52,5 +58,21 @@
 		onclick={() => (pressureOpacity = !pressureOpacity)}
 	>
 		{pressureOpacity ? 'Pressure → opacity' : 'Fixed opacity'}
+	</button>
+	<button
+		type="button"
+		class="mt-1 rounded-md bg-white/15 px-2.5 py-1.5 text-left text-xs font-medium tracking-wide text-white/80 transition hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white/15"
+		disabled={!canUndo}
+		onclick={() => historyApi?.undo()}
+	>
+		Undo
+	</button>
+	<button
+		type="button"
+		class="rounded-md bg-white/15 px-2.5 py-1.5 text-left text-xs font-medium tracking-wide text-white/80 transition hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white/15"
+		disabled={!canRedo}
+		onclick={() => historyApi?.redo()}
+	>
+		Redo
 	</button>
 </div>
