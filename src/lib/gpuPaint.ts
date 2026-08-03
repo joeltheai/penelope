@@ -43,6 +43,19 @@ const PresentUniforms = d.struct({
 	docSize: d.vec2f
 });
 
+// Screen-fixed backdrop grid (does not pan/zoom/rotate with the document)
+const GridUniforms = d.struct({
+	cssSize: d.vec2f,
+	spacing: d.f32
+});
+
+const GRID_BG = [0.11, 0.11, 0.114] as const;
+const GRID_LINE = [0.18, 0.18, 0.185] as const;
+const GRID_MAJOR = [0.24, 0.24, 0.25] as const;
+// CSS pixels between minor lines — smaller = denser
+const GRID_SPACING = 16;
+const GRID_MAJOR_EVERY = 4;
+
 export type ViewState = {
 	x: number;
 	y: number;
@@ -186,6 +199,10 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		strokeActive: 0,
 		docSize: [DOC_W, DOC_H]
 	});
+	const gridUniforms = root.createUniform(GridUniforms, {
+		cssSize: [1, 1],
+		spacing: GRID_SPACING
+	});
 
 	const stampLayout = tgpu.vertexLayout(d.disarrayOf(StampVertex));
 	const vertexBuf = root
@@ -269,6 +286,41 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		return d.vec4f(rgb, 1);
 	});
 
+	const gridFragment = tgpu.fragmentFn({
+		in: { uv: d.vec2f },
+		out: d.vec4f
+	})((input) => {
+		'use gpu';
+		const u = gridUniforms.$;
+		const sx = input.uv.x * u.cssSize.x;
+		const sy = input.uv.y * u.cssSize.y;
+
+		const spacing = u.spacing;
+		const majorSpacing = spacing * GRID_MAJOR_EVERY;
+		const fx = std.fract(sx / spacing);
+		const fy = std.fract(sy / spacing);
+		const dx = std.min(fx, 1 - fx) * spacing;
+		const dy = std.min(fy, 1 - fy) * spacing;
+		const dist = std.min(dx, dy);
+
+		const mfx = std.fract(sx / majorSpacing);
+		const mfy = std.fract(sy / majorSpacing);
+		const mdx = std.min(mfx, 1 - mfx) * majorSpacing;
+		const mdy = std.min(mfy, 1 - mfy) * majorSpacing;
+		const majorDist = std.min(mdx, mdy);
+
+		const half = 0.6;
+		const minor = 1 - std.smoothstep(0, half, dist);
+		const major = 1 - std.smoothstep(0, half * 1.25, majorDist);
+
+		const bg = d.vec3f(GRID_BG[0], GRID_BG[1], GRID_BG[2]);
+		const minorCol = d.vec3f(GRID_LINE[0], GRID_LINE[1], GRID_LINE[2]);
+		const majorCol = d.vec3f(GRID_MAJOR[0], GRID_MAJOR[1], GRID_MAJOR[2]);
+		const withMinor = std.mix(bg, minorCol, minor);
+		const rgb = std.mix(withMinor, majorCol, major);
+		return d.vec4f(rgb, 1);
+	});
+
 	const strokePipeline = root
 		.createRenderPipeline({
 			attribs: { ...stampLayout.attrib },
@@ -298,6 +350,13 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 				alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
 			}
 		},
+		primitive: { topology: 'triangle-list' }
+	});
+
+	const gridPipeline = root.createRenderPipeline({
+		vertex: common.fullScreenTriangle,
+		fragment: gridFragment,
+		targets: { format },
 		primitive: { topology: 'triangle-list' }
 	});
 
@@ -484,11 +543,24 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 				docSize: [DOC_W, DOC_H]
 			});
 
+			gridUniforms.write({
+				cssSize: [cssW, cssH],
+				spacing: GRID_SPACING
+			});
+
+			gridPipeline
+				.withColorAttachment({
+					view: context,
+					clearValue: [GRID_BG[0], GRID_BG[1], GRID_BG[2], 1],
+					loadOp: 'clear',
+					storeOp: 'store'
+				})
+				.draw(3);
+
 			presentPipeline
 				.withColorAttachment({
 					view: context,
-					clearValue: [0.11, 0.11, 0.114, 1],
-					loadOp: 'clear',
+					loadOp: 'load',
 					storeOp: 'store'
 				})
 				.draw(6);
