@@ -16,8 +16,8 @@
 		size = $bindable(8),
 		opacity = $bindable(1),
 		spacing = $bindable(0.06),
-		pressureSize = $bindable(true),
-		pressureOpacity = $bindable(false)
+		pressureSize = $bindable(false),
+		pressureOpacity = $bindable(true)
 	}: {
 		color?: string;
 		size?: number;

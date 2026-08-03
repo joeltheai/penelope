@@ -8,8 +8,8 @@
 	let size = $state(8);
 	let opacity = $state(1);
 	let spacing = $state(0.06);
-	let pressureSize = $state(true);
-	let pressureOpacity = $state(false);
+	let pressureSize = $state(false);
+	let pressureOpacity = $state(true);
 </script>
 
 <PaintCanvas
