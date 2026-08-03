@@ -56,9 +56,10 @@
 		let cancelled = false;
 		let gpu: GpuPaint | null = null;
 
-		const view = { x: 0, y: 0, zoom: 0.5, rotation: 0 };
+		const view = { x: 0, y: 0, zoom: 1, rotation: 0 };
 		let cssW = 0;
 		let cssH = 0;
+		let fittedOnce = false;
 
 		let drawing = false;
 		let strokeActive = false;
@@ -154,10 +155,27 @@
 			present();
 		}
 
+		/** Zoom so the full document fits in the viewport (centered). */
+		function fitDocumentToScreen() {
+			if (!gpu || cssW < 1 || cssH < 1) return;
+			const MIN_Z = 0.05;
+			const MAX_Z = 20;
+			const margin = 0.92;
+			const zoom = Math.min(cssW / gpu.docW, cssH / gpu.docH) * margin;
+			view.zoom = Math.min(MAX_Z, Math.max(MIN_Z, zoom));
+			view.x = 0;
+			view.y = 0;
+			view.rotation = 0;
+		}
+
 		function resize() {
 			cssW = surface.clientWidth;
 			cssH = surface.clientHeight;
 			gpu?.resize(cssW, cssH);
+			if (gpu && !fittedOnce && cssW > 0 && cssH > 0) {
+				fitDocumentToScreen();
+				fittedOnce = true;
+			}
 			present();
 		}
 
