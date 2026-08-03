@@ -13,6 +13,7 @@
 	let canUndo = $state(false);
 	let canRedo = $state(false);
 	let historyApi = $state<null | { undo: () => void; redo: () => void }>(null);
+	let zoom = $state(1);
 </script>
 
 <PaintCanvas
@@ -25,6 +26,7 @@
 	bind:canUndo
 	bind:canRedo
 	bind:historyApi
+	bind:zoom
 />
 
 <div class="fixed top-4 right-4 z-10">
@@ -38,7 +40,7 @@
 </div>
 
 <div class="fixed top-4 left-4 z-10 flex flex-col gap-1">
-	<SliderSize bind:value={size} />
+	<SliderSize bind:value={size} {zoom} />
 	<SliderOpacity bind:value={opacity} />
 	<SliderSpacing bind:value={spacing} />
 	<button

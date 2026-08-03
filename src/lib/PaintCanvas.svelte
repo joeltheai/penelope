@@ -22,7 +22,8 @@
 		pressureOpacity = $bindable(true),
 		canUndo = $bindable(false),
 		canRedo = $bindable(false),
-		historyApi = $bindable(null as null | HistoryApi)
+		historyApi = $bindable(null as null | HistoryApi),
+		zoom = $bindable(1)
 	}: {
 		color?: string;
 		size?: number;
@@ -33,6 +34,7 @@
 		canUndo?: boolean;
 		canRedo?: boolean;
 		historyApi?: null | HistoryApi;
+		zoom?: number;
 	} = $props();
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -150,6 +152,7 @@
 			const before = screenToDoc(pivotX, pivotY);
 			view.zoom = Math.min(MAX_Z, Math.max(MIN_Z, newZoom));
 			view.rotation = newRotation;
+			syncZoom();
 
 			const cos = Math.cos(view.rotation);
 			const sin = Math.sin(view.rotation);
@@ -189,6 +192,10 @@
 			canRedo = gpu.canRedo();
 		}
 
+		function syncZoom() {
+			zoom = view.zoom;
+		}
+
 		function runUndo() {
 			if (!gpu || drawing || strokeActive) return;
 			gpu.undo();
@@ -218,11 +225,12 @@
 			const MIN_Z = 0.05;
 			const MAX_Z = 20;
 			const margin = 0.92;
-			const zoom = Math.min(cssW / gpu.docW, cssH / gpu.docH) * margin;
-			view.zoom = Math.min(MAX_Z, Math.max(MIN_Z, zoom));
+			const nextZoom = Math.min(cssW / gpu.docW, cssH / gpu.docH) * margin;
+			view.zoom = Math.min(MAX_Z, Math.max(MIN_Z, nextZoom));
 			view.x = 0;
 			view.y = 0;
 			view.rotation = 0;
+			syncZoom();
 		}
 
 		function resize() {
@@ -350,6 +358,7 @@
 						MAX_Z,
 						Math.max(MIN_Z, pinch.startZoom * (dist / Math.max(pinch.startDist, 1e-6)))
 					);
+					syncZoom();
 					view.rotation = pinch.startRotation + (angle - pinch.startAngle);
 					placeDocAtScreen(pinch.docPoint, midX, midY);
 					present();
@@ -464,6 +473,7 @@
 			historyApi = null;
 			canUndo = false;
 			canRedo = false;
+			zoom = 1;
 			ro.disconnect();
 			gpu?.destroy();
 			gpu = null;
