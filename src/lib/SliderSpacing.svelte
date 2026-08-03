@@ -104,7 +104,7 @@
 		aria-valuemin={min}
 		aria-valuemax={max}
 		aria-valuenow={value}
-		class="relative h-10 w-32 cursor-pointer touch-none rounded-xl border border-white/50 bg-white/10 outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+		class="relative h-10 w-32 cursor-pointer touch-none overflow-hidden rounded-xl border border-white/50 bg-white/10 outline-none focus-visible:ring-2 focus-visible:ring-white/60"
 		onpointerdown={onPointerDown}
 		onpointermove={onPointerMove}
 		onpointerup={onPointerUp}
