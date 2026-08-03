@@ -21,8 +21,13 @@
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",
 		"tailwindcss": "^4.3.0",
-		"typescript": "^6.0.3",
+		"typescript": "npm:tsover@6.0.2",
 		"vite": "^8.0.16",
-		"wrangler": "^4.97.0"
+		"wrangler": "^4.97.0",
+		"unplugin-typegpu": "^0.11.2",
+		"@webgpu/types": "^0.1.69"
+	},
+	"dependencies": {
+		"typegpu": "^0.11.2"
 	}
 }

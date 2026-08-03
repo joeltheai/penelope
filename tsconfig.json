@@ -11,8 +11,10 @@
 		"sourceMap": true,
 		"strict": true,
 		"moduleResolution": "bundler",
+		"lib": ["tsover", "ES2022", "DOM", "DOM.Iterable"],
 		"types": [
-			"./worker-configuration.d.ts"
+			"./worker-configuration.d.ts",
+			"@webgpu/types"
 		]
 	}
 }

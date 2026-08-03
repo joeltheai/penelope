@@ -1,6 +1,4 @@
-import strokeWgsl from './shaders/stroke.wgsl?raw';
-import compositeWgsl from './shaders/composite.wgsl?raw';
-import presentWgsl from './shaders/present.wgsl?raw';
+import tgpu, { d, std, common } from 'typegpu';
 
 const DOC_W = 2000;
 const DOC_H = 2000;
@@ -10,19 +8,6 @@ const FLOATS_PER_VERT = 7;
 const VERTS_PER_STAMP = 6;
 const MAX_VERT_FLOATS = MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP * FLOATS_PER_VERT;
 
-// Numeric WebGPU usage flags (TS DOM lib omits the GPU*Usage consts).
-const TEX = {
-	COPY_SRC: 0x01,
-	COPY_DST: 0x02,
-	TEXTURE_BINDING: 0x04,
-	RENDER_ATTACHMENT: 0x10
-} as const;
-const BUF = {
-	COPY_DST: 0x08,
-	VERTEX: 0x20,
-	UNIFORM: 0x40
-} as const;
-
 const CORNERS: [number, number][] = [
 	[-1, -1],
 	[1, -1],
@@ -31,6 +16,32 @@ const CORNERS: [number, number][] = [
 	[1, 1],
 	[-1, 1]
 ];
+
+const StampVertex = d.unstruct({
+	pos: d.float32x2,
+	corner: d.float32x2,
+	size: d.float32,
+	sizePressure: d.float32,
+	opacityPressure: d.float32
+});
+
+const StrokeUniforms = d.struct({
+	resolution: d.vec2f,
+	color: d.vec4f
+});
+
+const CompositeUniforms = d.struct({
+	opacity: d.f32
+});
+
+const PresentUniforms = d.struct({
+	m0: d.vec3f,
+	m1: d.vec3f,
+	m2: d.vec3f,
+	strokeOpacity: d.f32,
+	strokeActive: d.f32,
+	docSize: d.vec2f
+});
 
 export type ViewState = {
 	x: number;
@@ -114,196 +125,192 @@ function appendStamp(
 	return o;
 }
 
+function webGpuUnavailableMessage(): string {
+	if (typeof isSecureContext !== 'undefined' && !isSecureContext) {
+		return 'WebGPU needs a secure context. http://192.168.x.x will not work on iPad — use HTTPS, or open via localhost on the same device.';
+	}
+	return 'WebGPU is not available here. On iPad it needs iPadOS 26+ (Safari 26); feature flags on older versions usually do not expose navigator.gpu.';
+}
+
 export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPaint> {
-	if (!navigator.gpu) {
-		if (typeof isSecureContext !== 'undefined' && !isSecureContext) {
+	if (!navigator.gpu) throw new Error(webGpuUnavailableMessage());
+
+	let root: Awaited<ReturnType<typeof tgpu.init>>;
+	try {
+		root = await tgpu.init();
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (/not supported|compatible GPU|requestAdapter/i.test(msg)) {
 			throw new Error(
-				'WebGPU needs a secure context. http://192.168.x.x will not work on iPad — use HTTPS, or open via localhost on the same device.'
+				msg.includes('compatible')
+					? 'No WebGPU adapter available (requestAdapter returned null)'
+					: webGpuUnavailableMessage()
 			);
 		}
-		throw new Error(
-			'WebGPU is not available here. On iPad it needs iPadOS 26+ (Safari 26); feature flags on older versions usually do not expose navigator.gpu.'
-		);
+		throw err;
 	}
-
-	const adapter = await navigator.gpu.requestAdapter();
-	if (!adapter) throw new Error('No WebGPU adapter available (requestAdapter returned null)');
-
-	const device = await adapter.requestDevice();
-	const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
-	if (!context) throw new Error('Failed to get WebGPU canvas context');
 
 	const format = navigator.gpu.getPreferredCanvasFormat();
-	context.configure({ device, format, alphaMode: 'opaque' });
+	const context = root.configureContext({ canvas, format, alphaMode: 'opaque' });
 
-	const layerUsage = TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING | TEX.COPY_SRC;
+	const docTex = root
+		.createTexture({ size: [DOC_W, DOC_H], format: 'rgba8unorm' })
+		.$usage('sampled', 'render');
+	const strokeTex = root
+		.createTexture({ size: [DOC_W, DOC_H], format: 'rgba8unorm' })
+		.$usage('sampled', 'render');
+	const brushTex = root
+		.createTexture({ size: [BRUSH_SIZE, BRUSH_SIZE], format: 'rgba8unorm' })
+		.$usage('sampled');
 
-	const docTex = device.createTexture({
-		size: [DOC_W, DOC_H],
-		format: 'rgba8unorm',
-		usage: layerUsage
+	brushTex.write(makeBrushPixels(BRUSH_SIZE));
+
+	const docView = docTex.createView();
+	const strokeView = strokeTex.createView();
+	const brushView = brushTex.createView();
+	const docRenderView = docTex.createView('render');
+	const strokeRenderView = strokeTex.createView('render');
+
+	const linearSamp = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+
+	const strokeUniforms = root.createUniform(StrokeUniforms, {
+		resolution: [DOC_W, DOC_H],
+		color: [0, 0, 0, 1]
 	});
-	const strokeTex = device.createTexture({
-		size: [DOC_W, DOC_H],
-		format: 'rgba8unorm',
-		usage: layerUsage
-	});
-
-	const brushTex = device.createTexture({
-		size: [BRUSH_SIZE, BRUSH_SIZE],
-		format: 'rgba8unorm',
-		usage: TEX.TEXTURE_BINDING | TEX.COPY_DST
-	});
-	device.queue.writeTexture(
-		{ texture: brushTex },
-		makeBrushPixels(BRUSH_SIZE),
-		{ bytesPerRow: BRUSH_SIZE * 4 },
-		[BRUSH_SIZE, BRUSH_SIZE]
-	);
-
-	const linearSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-
-	const strokeModule = device.createShaderModule({ code: strokeWgsl });
-	const compositeModule = device.createShaderModule({ code: compositeWgsl });
-	const presentModule = device.createShaderModule({ code: presentWgsl });
-
-	const strokePipeline = device.createRenderPipeline({
-		layout: 'auto',
-		vertex: {
-			module: strokeModule,
-			entryPoint: 'vs',
-			buffers: [
-				{
-					arrayStride: FLOATS_PER_VERT * 4,
-					attributes: [
-						{ shaderLocation: 0, offset: 0, format: 'float32x2' },
-						{ shaderLocation: 1, offset: 8, format: 'float32x2' },
-						{ shaderLocation: 2, offset: 16, format: 'float32' },
-						{ shaderLocation: 3, offset: 20, format: 'float32' },
-						{ shaderLocation: 4, offset: 24, format: 'float32' }
-					]
-				}
-			]
-		},
-		fragment: {
-			module: strokeModule,
-			entryPoint: 'fs',
-			targets: [
-				{
-					format: 'rgba8unorm',
-					// Krita "wash" / stroke opacity: dabs take max coverage instead of
-					// stacking (source-over). Crossing yourself in one stroke won't
-					// keep darkening — only a new stroke after lift can layer.
-					blend: {
-						color: { srcFactor: 'one', dstFactor: 'one', operation: 'max' },
-						alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'max' }
-					}
-				}
-			]
-		},
-		primitive: { topology: 'triangle-list' }
+	const compositeUniforms = root.createUniform(CompositeUniforms, { opacity: 1 });
+	const presentUniforms = root.createUniform(PresentUniforms, {
+		m0: [1, 0, 0],
+		m1: [0, 1, 0],
+		m2: [0, 0, 1],
+		strokeOpacity: 1,
+		strokeActive: 0,
+		docSize: [DOC_W, DOC_H]
 	});
 
-	const compositePipeline = device.createRenderPipeline({
-		layout: 'auto',
-		vertex: { module: compositeModule, entryPoint: 'vs' },
-		fragment: {
-			module: compositeModule,
-			entryPoint: 'fs',
-			targets: [
-				{
-					format: 'rgba8unorm',
-					blend: {
-						color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-						alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
-					}
-				}
-			]
-		},
-		primitive: { topology: 'triangle-list' }
-	});
-
-	const presentPipeline = device.createRenderPipeline({
-		layout: 'auto',
-		vertex: { module: presentModule, entryPoint: 'vs' },
-		fragment: {
-			module: presentModule,
-			entryPoint: 'fs',
-			targets: [{ format }]
-		},
-		primitive: { topology: 'triangle-list' }
-	});
-
-	const strokeUniformBuf = device.createBuffer({
-		size: 32,
-		usage: BUF.UNIFORM | BUF.COPY_DST
-	});
-	const compositeUniformBuf = device.createBuffer({
-		size: 16,
-		usage: BUF.UNIFORM | BUF.COPY_DST
-	});
-	const presentUniformBuf = device.createBuffer({
-		size: 64,
-		usage: BUF.UNIFORM | BUF.COPY_DST
-	});
-
-	const vertexBuf = device.createBuffer({
-		size: MAX_VERT_FLOATS * 4,
-		usage: BUF.VERTEX | BUF.COPY_DST
-	});
+	const stampLayout = tgpu.vertexLayout(d.disarrayOf(StampVertex));
+	const vertexBuf = root
+		.createBuffer(stampLayout.schemaForCount(MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP))
+		.$usage('vertex');
 	const vertexCpu = new Float32Array(MAX_VERT_FLOATS);
 
-	let strokeBindGroup = device.createBindGroup({
-		layout: strokePipeline.getBindGroupLayout(0),
-		entries: [
-			{ binding: 0, resource: { buffer: strokeUniformBuf } },
-			{ binding: 1, resource: brushTex.createView() },
-			{ binding: 2, resource: linearSamp }
-		]
+	const strokeVertex = tgpu.vertexFn({
+		in: {
+			pos: d.vec2f,
+			corner: d.vec2f,
+			size: d.f32,
+			sizePressure: d.f32,
+			opacityPressure: d.f32
+		},
+		out: {
+			position: d.builtin.position,
+			uv: d.vec2f,
+			opacityPressure: d.f32
+		}
+	})((input) => {
+		'use gpu';
+		const half = input.size * 0.5 * input.sizePressure;
+		const pixel = input.pos + input.corner * half;
+		const clip = (pixel / strokeUniforms.$.resolution) * d.vec2f(2, -2) + d.vec2f(-1, 1);
+		return {
+			position: d.vec4f(clip, 0, 1),
+			uv: input.corner * 0.5 + 0.5,
+			opacityPressure: input.opacityPressure
+		};
 	});
 
-	function rebuildLayerBindGroups() {
-		compositeBindGroup = device.createBindGroup({
-			layout: compositePipeline.getBindGroupLayout(0),
-			entries: [
-				{ binding: 0, resource: { buffer: compositeUniformBuf } },
-				{ binding: 1, resource: strokeTex.createView() },
-				{ binding: 2, resource: linearSamp }
-			]
-		});
-		presentBindGroup = device.createBindGroup({
-			layout: presentPipeline.getBindGroupLayout(0),
-			entries: [
-				{ binding: 0, resource: { buffer: presentUniformBuf } },
-				{ binding: 1, resource: docTex.createView() },
-				{ binding: 2, resource: strokeTex.createView() },
-				{ binding: 3, resource: linearSamp }
-			]
-		});
-	}
+	const strokeFragment = tgpu.fragmentFn({
+		in: { uv: d.vec2f, opacityPressure: d.f32 },
+		out: d.vec4f
+	})((input) => {
+		'use gpu';
+		const mask = std.textureSample(brushView.$, linearSamp.$, input.uv).a;
+		const color = d.vec4f(strokeUniforms.$.color);
+		const a = mask * color.a * input.opacityPressure;
+		return d.vec4f(color.rgb * a, a);
+	});
 
-	let compositeBindGroup!: GPUBindGroup;
-	let presentBindGroup!: GPUBindGroup;
-	rebuildLayerBindGroups();
+	const compositeFragment = tgpu.fragmentFn({
+		in: { uv: d.vec2f },
+		out: d.vec4f
+	})((input) => {
+		'use gpu';
+		const s = std.textureSample(strokeView.$, linearSamp.$, input.uv);
+		const opacity = compositeUniforms.$.opacity;
+		return d.vec4f(s.rgb * opacity, s.a * opacity);
+	});
 
-	function clearTexture(tex: GPUTexture, color: GPUColor) {
-		const encoder = device.createCommandEncoder();
-		const pass = encoder.beginRenderPass({
-			colorAttachments: [
-				{
-					view: tex.createView(),
-					clearValue: color,
-					loadOp: 'clear',
-					storeOp: 'store'
+	const presentVertex = tgpu.vertexFn({
+		in: { vertexIndex: d.builtin.vertexIndex },
+		out: { position: d.builtin.position, uv: d.vec2f }
+	})((input) => {
+		'use gpu';
+		const vi = input.vertexIndex;
+		const x = std.select(0, 1, vi === 1 || vi === 2 || vi === 4);
+		const y = std.select(0, 1, vi === 2 || vi === 4 || vi === 5);
+		const u = presentUniforms.$;
+		const doc = d.vec3f(x * u.docSize.x, y * u.docSize.y, 1);
+		return {
+			position: d.vec4f(std.dot(u.m0, doc), std.dot(u.m1, doc), 0, 1),
+			uv: d.vec2f(x, y)
+		};
+	});
+
+	const presentFragment = tgpu.fragmentFn({
+		in: { uv: d.vec2f },
+		out: d.vec4f
+	})((input) => {
+		'use gpu';
+		const u = presentUniforms.$;
+		const docSample = std.textureSample(docView.$, linearSamp.$, input.uv);
+		const strokeSample = std.textureSample(strokeView.$, linearSamp.$, input.uv);
+		const factor = u.strokeOpacity * u.strokeActive;
+		const a = strokeSample.a * factor;
+		const rgb = strokeSample.rgb * factor + docSample.rgb * (1 - a);
+		return d.vec4f(rgb, 1);
+	});
+
+	const strokePipeline = root
+		.createRenderPipeline({
+			attribs: { ...stampLayout.attrib },
+			vertex: strokeVertex,
+			fragment: strokeFragment,
+			targets: {
+				format: 'rgba8unorm',
+				// Krita "wash" / stroke opacity: dabs take max coverage instead of
+				// stacking (source-over). Crossing yourself in one stroke won't
+				// keep darkening — only a new stroke after lift can layer.
+				blend: {
+					color: { srcFactor: 'one', dstFactor: 'one', operation: 'max' },
+					alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'max' }
 				}
-			]
-		});
-		pass.end();
-		device.queue.submit([encoder.finish()]);
-	}
+			},
+			primitive: { topology: 'triangle-list' }
+		})
+		.with(stampLayout, vertexBuf);
 
-	clearTexture(docTex, { r: 1, g: 1, b: 1, a: 1 });
-	clearTexture(strokeTex, { r: 0, g: 0, b: 0, a: 0 });
+	const compositePipeline = root.createRenderPipeline({
+		vertex: common.fullScreenTriangle,
+		fragment: compositeFragment,
+		targets: {
+			format: 'rgba8unorm',
+			blend: {
+				color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+				alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
+			}
+		},
+		primitive: { topology: 'triangle-list' }
+	});
+
+	const presentPipeline = root.createRenderPipeline({
+		vertex: presentVertex,
+		fragment: presentFragment,
+		targets: { format },
+		primitive: { topology: 'triangle-list' }
+	});
+
+	// White document background (Texture.clear is zero-fill only).
+	docTex.write(new Uint8Array(DOC_W * DOC_H * 4).fill(255));
+	strokeTex.clear();
 
 	let stampCount = 0;
 	let lastStamp: {
@@ -336,34 +343,21 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		if (destroyed || stampCount === 0) return;
 
 		const floats = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
-		device.queue.writeBuffer(vertexBuf, 0, vertexCpu, 0, floats);
+		vertexBuf.write(vertexCpu.buffer.slice(0, floats * 4));
 
 		const [r, g, b] = parseColor(color);
-		const u = new Float32Array(8);
-		u[0] = DOC_W;
-		u[1] = DOC_H;
-		u[4] = r;
-		u[5] = g;
-		u[6] = b;
-		u[7] = 1;
-		device.queue.writeBuffer(strokeUniformBuf, 0, u);
-
-		const encoder = device.createCommandEncoder();
-		const pass = encoder.beginRenderPass({
-			colorAttachments: [
-				{
-					view: strokeTex.createView(),
-					loadOp: 'load',
-					storeOp: 'store'
-				}
-			]
+		strokeUniforms.write({
+			resolution: [DOC_W, DOC_H],
+			color: [r, g, b, 1]
 		});
-		pass.setPipeline(strokePipeline);
-		pass.setBindGroup(0, strokeBindGroup);
-		pass.setVertexBuffer(0, vertexBuf);
-		pass.draw(stampCount * VERTS_PER_STAMP);
-		pass.end();
-		device.queue.submit([encoder.finish()]);
+
+		strokePipeline
+			.withColorAttachment({
+				view: strokeRenderView,
+				loadOp: 'load',
+				storeOp: 'store'
+			})
+			.draw(stampCount * VERTS_PER_STAMP);
 		stampCount = 0;
 	}
 
@@ -376,12 +370,12 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			const dpr = devicePixelRatio || 1;
 			canvas.width = Math.max(1, Math.round(cssW * dpr));
 			canvas.height = Math.max(1, Math.round(cssH * dpr));
-			context.configure({ device, format, alphaMode: 'opaque' });
+			root.configureContext({ canvas, format, alphaMode: 'opaque' });
 		},
 
 		beginStroke() {
 			if (destroyed) return;
-			clearTexture(strokeTex, { r: 0, g: 0, b: 0, a: 0 });
+			strokeTex.clear();
 			lastStamp = null;
 			stampCount = 0;
 		},
@@ -390,26 +384,16 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			if (destroyed) return;
 			paintStampsToStroke(lastColor);
 
-			const u = new Float32Array([opacity, 0, 0, 0]);
-			device.queue.writeBuffer(compositeUniformBuf, 0, u);
+			compositeUniforms.write({ opacity });
+			compositePipeline
+				.withColorAttachment({
+					view: docRenderView,
+					loadOp: 'load',
+					storeOp: 'store'
+				})
+				.draw(3);
 
-			const encoder = device.createCommandEncoder();
-			const pass = encoder.beginRenderPass({
-				colorAttachments: [
-					{
-						view: docTex.createView(),
-						loadOp: 'load',
-						storeOp: 'store'
-					}
-				]
-			});
-			pass.setPipeline(compositePipeline);
-			pass.setBindGroup(0, compositeBindGroup);
-			pass.draw(6);
-			pass.end();
-			device.queue.submit([encoder.finish()]);
-
-			clearTexture(strokeTex, { r: 0, g: 0, b: 0, a: 0 });
+			strokeTex.clear();
 			lastStamp = null;
 			stampCount = 0;
 		},
@@ -477,9 +461,9 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			const a = cos * zx;
 			const b = -sin * zy;
 			const c = sin * zx;
-			const d = cos * zy;
+			const dMat = cos * zy;
 			const tx = -a * cx - b * cy + cssW / 2 + view.x;
-			const ty = -c * cx - d * cy + cssH / 2 + view.y;
+			const ty = -c * cx - dMat * cy + cssH / 2 + view.y;
 			// screen css -> clip: x_c = sx/cssW*2-1, y_c = 1-sy/cssH*2
 			const sx = 2 / cssW;
 			const sy = -2 / cssH;
@@ -488,54 +472,31 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			const m01 = sx * b;
 			const m02 = sx * tx - 1;
 			const m10 = sy * c;
-			const m11 = sy * d;
+			const m11 = sy * dMat;
 			const m12 = sy * ty + 1;
 
-			const u = new Float32Array(16);
-			// rows stored as vec3 + pad in WGSL struct
-			u[0] = m00;
-			u[1] = m01;
-			u[2] = m02;
-			u[4] = m10;
-			u[5] = m11;
-			u[6] = m12;
-			u[8] = 0;
-			u[9] = 0;
-			u[10] = 1;
-			u[12] = opacity;
-			u[13] = strokeActive ? 1 : 0;
-			u[14] = DOC_W;
-			u[15] = DOC_H;
-			device.queue.writeBuffer(presentUniformBuf, 0, u);
-
-			const encoder = device.createCommandEncoder();
-			const pass = encoder.beginRenderPass({
-				colorAttachments: [
-					{
-						view: context.getCurrentTexture().createView(),
-						clearValue: { r: 0.11, g: 0.11, b: 0.114, a: 1 },
-						loadOp: 'clear',
-						storeOp: 'store'
-					}
-				]
+			presentUniforms.write({
+				m0: [m00, m01, m02],
+				m1: [m10, m11, m12],
+				m2: [0, 0, 1],
+				strokeOpacity: opacity,
+				strokeActive: strokeActive ? 1 : 0,
+				docSize: [DOC_W, DOC_H]
 			});
-			pass.setPipeline(presentPipeline);
-			pass.setBindGroup(0, presentBindGroup);
-			pass.draw(6);
-			pass.end();
-			device.queue.submit([encoder.finish()]);
+
+			presentPipeline
+				.withColorAttachment({
+					view: context,
+					clearValue: [0.11, 0.11, 0.114, 1],
+					loadOp: 'clear',
+					storeOp: 'store'
+				})
+				.draw(6);
 		},
 
 		destroy() {
 			destroyed = true;
-			docTex.destroy();
-			strokeTex.destroy();
-			brushTex.destroy();
-			vertexBuf.destroy();
-			strokeUniformBuf.destroy();
-			compositeUniformBuf.destroy();
-			presentUniformBuf.destroy();
-			device.destroy();
+			root.destroy();
 		}
 	};
 }

@@ -29,4 +29,7 @@ vite.config.ts.timestamp-*
 
 # Tooling
 .cursor/
+.agents/
+skills-lock.json
+.claude/
 .pnpm-store/
