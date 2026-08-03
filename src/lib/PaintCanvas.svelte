@@ -15,7 +15,7 @@
 		color = $bindable('#1a6cff'),
 		size = $bindable(8),
 		opacity = $bindable(1),
-		spacing = $bindable(0.06),
+		spacing = $bindable(0.005),
 		pressureSize = $bindable(false),
 		pressureOpacity = $bindable(true)
 	}: {

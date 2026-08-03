@@ -1,6 +1,6 @@
 <script lang="ts">
 	let {
-		value = $bindable(0.06),
+		value = $bindable(0.005),
 		min = 0.005,
 		max = 0.5,
 		step = 0.005

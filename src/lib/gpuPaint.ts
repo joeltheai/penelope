@@ -464,7 +464,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			sizePressure: number,
 			opacityPressure: number,
 			color: string,
-			spacingFactor = 0.06
+			spacingFactor = 0.005
 		) {
 			if (destroyed) return;
 			lastColor = color;

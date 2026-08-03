@@ -7,7 +7,7 @@
 	let color = $state('#1a6cff');
 	let size = $state(8);
 	let opacity = $state(1);
-	let spacing = $state(0.06);
+	let spacing = $state(0.005);
 	let pressureSize = $state(false);
 	let pressureOpacity = $state(true);
 </script>
