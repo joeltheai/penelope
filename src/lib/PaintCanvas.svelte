@@ -255,15 +255,14 @@
 			};
 		}
 
-		function paintAt(sx: number, sy: number, sizeP: number, opacP: number) {
+		function queuePaintAt(sx: number, sy: number, sizeP: number, opacP: number) {
 			if (!gpu) return;
 			const p = screenToDoc(sx, sy);
 			gpu.addSample(p.x, p.y, size * 2, sizeP, opacP, color, spacing);
-			gpu.flushStamps(color);
-			present();
 		}
 
 		function paintPointerSamples(e: PointerEvent) {
+			if (!gpu) return;
 			if (!penState.hasPressure && eventLooksLikeRealPressure(e)) {
 				penState.hasPressure = true;
 			}
@@ -272,6 +271,8 @@
 				typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
 			const events = samples.length > 0 ? samples : [e];
 
+			// Queue all coalesced samples first, then one GPU flush + present.
+			// Flushing/presenting per sample was thrashing low-power mobile GPUs.
 			for (const ce of events) {
 				if (lastPaintScreen) {
 					addStrokeDistance(
@@ -281,8 +282,10 @@
 				}
 				const { sizeP, opacP } = samplePressures(ce);
 				lastPaintScreen = { x: ce.clientX, y: ce.clientY };
-				paintAt(ce.clientX, ce.clientY, sizeP, opacP);
+				queuePaintAt(ce.clientX, ce.clientY, sizeP, opacP);
 			}
+			gpu.flushStamps(color);
+			present();
 		}
 
 		function wantsRotate(e: PointerEvent) {
@@ -338,7 +341,9 @@
 				lastPaintScreen = null;
 				const { sizeP, opacP } = samplePressures(e);
 				lastPaintScreen = { x: e.clientX, y: e.clientY };
-				paintAt(e.clientX, e.clientY, sizeP, opacP);
+				queuePaintAt(e.clientX, e.clientY, sizeP, opacP);
+				gpu?.flushStamps(color);
+				present();
 			}
 		}
 

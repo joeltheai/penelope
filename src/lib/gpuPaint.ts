@@ -7,8 +7,10 @@ const MAX_STAMPS_PER_FLUSH = 4096;
 const FLOATS_PER_VERT = 7;
 const VERTS_PER_STAMP = 6;
 const MAX_VERT_FLOATS = MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP * FLOATS_PER_VERT;
-/** Max completed strokes kept for undo (~16 MB RGBA each). */
-const MAX_HISTORY = 50;
+/** Max completed strokes kept for undo (~16 MB RGBA each). Keep this low for mobile GPU memory. */
+const MAX_HISTORY = 12;
+/** Warm textures retained for reuse; anything beyond this is destroyed. */
+const MAX_HISTORY_POOL = 2;
 
 const CORNERS: [number, number][] = [
 	[-1, -1],
@@ -405,12 +407,22 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	}
 
 	function releaseHistoryTex(tex: HistoryTex) {
+		if (historyPool.length >= MAX_HISTORY_POOL) {
+			tex.destroy();
+			return;
+		}
 		historyPool.push(tex);
 	}
 
 	function clearRedoStack() {
 		while (redoStack.length > 0) {
 			releaseHistoryTex(redoStack.pop()!);
+		}
+	}
+
+	function trimUndoStack() {
+		while (undoStack.length > MAX_HISTORY) {
+			releaseHistoryTex(undoStack.shift()!);
 		}
 	}
 
@@ -496,9 +508,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			const snap = acquireHistoryTex();
 			snap.copyFrom(docTex);
 			undoStack.push(snap);
-			while (undoStack.length > MAX_HISTORY) {
-				releaseHistoryTex(undoStack.shift()!);
-			}
+			trimUndoStack();
 		},
 
 		undo() {
@@ -517,6 +527,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			const current = acquireHistoryTex();
 			current.copyFrom(docTex);
 			undoStack.push(current);
+			trimUndoStack();
 			const next = redoStack.pop()!;
 			docTex.copyFrom(next);
 			releaseHistoryTex(next);
