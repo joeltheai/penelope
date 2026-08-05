@@ -922,10 +922,10 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 					lassoPoints.push({ x, y });
 					expandStrokeBounds(x, y, 1);
 				}
-				// Thin outline preview along the path (hard tip + wash blend).
-				const outlineDiameter = Math.max(2.5, brushDiameter * 0.2);
-				const spacing = spacingFor(outlineDiameter, 0.35);
-				const outlineOpac = Math.max(opacP, 0.35);
+				// Fixed-size dotted outline preview (ignore brush size & pressure).
+				const outlineDiameter = 5;
+				const spacing = spacingFor(outlineDiameter, 2.5);
+				const outlineOpac = 0.85;
 				if (!lastStamp) {
 					queueStamp(x, y, outlineDiameter, 1, outlineOpac);
 					lastStamp = { x, y, sizePressure: 1, opacityPressure: outlineOpac };
