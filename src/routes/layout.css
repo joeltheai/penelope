@@ -5,6 +5,8 @@ body {
 	height: 100%;
 	overflow: hidden;
 	overscroll-behavior: none;
+	/* Disable browser double-tap zoom; the paint canvas handles its own pinch zoom. */
+	touch-action: manipulation;
 	-webkit-user-select: none;
 	user-select: none;
 	-webkit-touch-callout: none;
