@@ -37,6 +37,14 @@ const StrokeUniforms = d.struct({
 	color: d.vec4f
 });
 
+/** Krita-style Alpha Darken params for airbrush wash dabs. */
+const AirbrushUniforms = d.struct({
+	resolution: d.vec2f,
+	color: d.vec3f,
+	flow: d.f32,
+	averageOpacity: d.f32
+});
+
 const CompositeUniforms = d.struct({
 	opacity: d.f32
 });
@@ -70,10 +78,14 @@ export type ViewState = {
 	rotation: number;
 };
 
+/** Stamp brushes (pen / airbrush) vs path-fill tool (lasso). */
+export type BrushKind = 'pen' | 'airbrush' | 'lasso';
+
 export type GpuPaint = {
 	docW: number;
 	docH: number;
 	resize: (cssW: number, cssH: number) => void;
+	setBrush: (brush: BrushKind) => void;
 	beginStroke: () => void;
 	endStroke: (opacity: number) => void;
 	/** Discard in-progress stroke without compositing or undo entry. */
@@ -109,8 +121,14 @@ function parseColor(hex: string): [number, number, number] {
 	return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
+/**
+ * Krita Creamy Alpha Darken flow — how fast dabs fill toward the stroke
+ * opacity cap (see KoCompositeOpAlphaDarken + KoAlphaDarkenParamsWrapperCreamy).
+ */
+const AIRBRUSH_FLOW = 0.4;
+
 /** Hard round tip with ~1px AA — reads like a pen, not an airbrush. */
-function makeBrushPixels(size: number): Uint8Array {
+function makeHardBrushPixels(size: number): Uint8Array {
 	const pixels = new Uint8Array(size * size * 4);
 	const aa = 1.25 / size;
 	for (let y = 0; y < size; y++) {
@@ -124,6 +142,48 @@ function makeBrushPixels(size: number): Uint8Array {
 			pixels[i + 1] = 255;
 			pixels[i + 2] = 255;
 			pixels[i + 3] = Math.round(a * 255);
+		}
+	}
+	return pixels;
+}
+
+/** Even-odd fill of a closed polygon into a tight AABB (premultiplied RGBA). */
+function rasterizePolygonEvenOdd(
+	points: { x: number; y: number }[],
+	bounds: { x: number; y: number; w: number; h: number },
+	r: number,
+	g: number,
+	b: number
+): Uint8Array {
+	const { x: bx, y: by, w, h } = bounds;
+	const pixels = new Uint8Array(w * h * 4);
+	const n = points.length;
+	const pr = Math.round(r * 255);
+	const pg = Math.round(g * 255);
+	const pb = Math.round(b * 255);
+
+	for (let row = 0; row < h; row++) {
+		const y = by + row + 0.5;
+		const xs: number[] = [];
+		for (let i = 0; i < n; i++) {
+			const a = points[i]!;
+			const c = points[(i + 1) % n]!;
+			if (a.y === c.y) continue;
+			if ((a.y > y) === (c.y > y)) continue;
+			const t = (y - a.y) / (c.y - a.y);
+			xs.push(a.x + t * (c.x - a.x));
+		}
+		xs.sort((u, v) => u - v);
+		for (let k = 0; k + 1 < xs.length; k += 2) {
+			const x0 = Math.max(bx, Math.floor(xs[k]!));
+			const x1 = Math.min(bx + w, Math.ceil(xs[k + 1]!));
+			for (let x = x0; x < x1; x++) {
+				const i = (row * w + (x - bx)) * 4;
+				pixels[i] = pr;
+				pixels[i + 1] = pg;
+				pixels[i + 2] = pb;
+				pixels[i + 3] = 255;
+			}
 		}
 	}
 	return pixels;
@@ -185,23 +245,35 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	const strokeTex = root
 		.createTexture({ size: [DOC_W, DOC_H], format: 'rgba8unorm' })
 		.$usage('sampled', 'render');
+	/** Ping-pong target for Krita Alpha Darken airbrush dabs (sample strokeTex, write here). */
+	const strokeTexB = root
+		.createTexture({ size: [DOC_W, DOC_H], format: 'rgba8unorm' })
+		.$usage('sampled', 'render');
 	const brushTex = root
 		.createTexture({ size: [BRUSH_SIZE, BRUSH_SIZE], format: 'rgba8unorm' })
 		.$usage('sampled');
 
-	brushTex.write(makeBrushPixels(BRUSH_SIZE));
+	const hardTipPixels = makeHardBrushPixels(BRUSH_SIZE);
+	brushTex.write(hardTipPixels);
 
 	const docView = docTex.createView();
 	const strokeView = strokeTex.createView();
 	const brushView = brushTex.createView();
 	const docRenderView = docTex.createView('render');
 	const strokeRenderView = strokeTex.createView('render');
+	const strokeRenderViewB = strokeTexB.createView('render');
 
 	const linearSamp = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
 	const strokeUniforms = root.createUniform(StrokeUniforms, {
 		resolution: [DOC_W, DOC_H],
 		color: [0, 0, 0, 1]
+	});
+	const airbrushUniforms = root.createUniform(AirbrushUniforms, {
+		resolution: [DOC_W, DOC_H],
+		color: [0, 0, 0],
+		flow: AIRBRUSH_FLOW,
+		averageOpacity: 0
 	});
 	const compositeUniforms = root.createUniform(CompositeUniforms, { opacity: 1 });
 	const presentUniforms = root.createUniform(PresentUniforms, {
@@ -257,6 +329,73 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		const color = d.vec4f(strokeUniforms.$.color);
 		const a = mask * color.a * input.opacityPressure;
 		return d.vec4f(color.rgb * a, a);
+	});
+
+	/** Airbrush dab vertex — also passes doc UVs to sample the stroke buffer. */
+	const airbrushVertex = tgpu.vertexFn({
+		in: {
+			pos: d.vec2f,
+			corner: d.vec2f,
+			size: d.f32,
+			sizePressure: d.f32,
+			opacityPressure: d.f32
+		},
+		out: {
+			position: d.builtin.position,
+			tipUv: d.vec2f,
+			docUv: d.vec2f,
+			opacityPressure: d.f32
+		}
+	})((input) => {
+		'use gpu';
+		const half = input.size * 0.5 * input.sizePressure;
+		const pixel = input.pos + input.corner * half;
+		const res = airbrushUniforms.$.resolution;
+		const clip = (pixel / res) * d.vec2f(2, -2) + d.vec2f(-1, 1);
+		return {
+			position: d.vec4f(clip, 0, 1),
+			tipUv: input.corner * 0.5 + 0.5,
+			docUv: pixel / res,
+			opacityPressure: input.opacityPressure
+		};
+	});
+
+	/**
+	 * Krita Creamy Alpha Darken into the stroke layer (wash).
+	 * Never decreases alpha; soft tip fills toward opacity cap via flow.
+	 * Same-color lock → premul C*newA (KoCompositeOpAlphaDarken.h).
+	 */
+	const airbrushFragment = tgpu.fragmentFn({
+		in: { tipUv: d.vec2f, docUv: d.vec2f, opacityPressure: d.f32 },
+		out: d.vec4f
+	})((input) => {
+		'use gpu';
+		const u = airbrushUniforms.$;
+		const dst = std.textureSample(strokeView.$, linearSamp.$, input.docUv);
+		const dstA = dst.a;
+
+		const delta = input.tipUv - d.vec2f(0.5);
+		const r = std.length(delta) * 2;
+		const t = std.max(1 - r, 0);
+		const msk = t * t * (3 - 2 * t);
+
+		const opacity = input.opacityPressure;
+		const flow = u.flow;
+		const averageOpacity = u.averageOpacity;
+		const srcAlpha = msk * opacity;
+
+		// KoCompositeOpAlphaDarken::calculateAlpha (Creamy wrapper)
+		const avgSafe = std.max(averageOpacity, 1e-5);
+		const fullWhenAvgHigh = std.select(
+			dstA,
+			std.mix(srcAlpha, averageOpacity, dstA / avgSafe),
+			averageOpacity > dstA
+		);
+		const fullWhenOpHigh = std.select(dstA, std.mix(dstA, opacity, msk), opacity > dstA);
+		const fullFlowAlpha = std.select(fullWhenOpHigh, fullWhenAvgHigh, averageOpacity > opacity);
+		const newA = std.mix(dstA, fullFlowAlpha, flow);
+		const C = u.color;
+		return d.vec4f(C * newA, newA);
 	});
 
 	const compositeFragment = tgpu.fragmentFn({
@@ -334,19 +473,34 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		return d.vec4f(rgb, 1);
 	});
 
-	const strokePipeline = root
+	const strokeWashPipeline = root
 		.createRenderPipeline({
 			attribs: { ...stampLayout.attrib },
 			vertex: strokeVertex,
 			fragment: strokeFragment,
 			targets: {
 				format: 'rgba8unorm',
-				// Krita "wash" / stroke opacity: dabs take max coverage instead of
-				// stacking (source-over). Crossing yourself in one stroke won't
-				// keep darkening — only a new stroke after lift can layer.
+				// Krita "wash": dabs take max coverage instead of stacking.
 				blend: {
 					color: { srcFactor: 'one', dstFactor: 'one', operation: 'max' },
 					alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'max' }
+				}
+			},
+			primitive: { topology: 'triangle-list' }
+		})
+		.with(stampLayout, vertexBuf);
+
+	/** Alpha Darken writes absolute premul coverage — replace, no GPU blend. */
+	const strokeAirbrushPipeline = root
+		.createRenderPipeline({
+			attribs: { ...stampLayout.attrib },
+			vertex: airbrushVertex,
+			fragment: airbrushFragment,
+			targets: {
+				format: 'rgba8unorm',
+				blend: {
+					color: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' },
+					alpha: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' }
 				}
 			},
 			primitive: { topology: 'triangle-list' }
@@ -383,6 +537,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	// White document background (Texture.clear is zero-fill only).
 	docTex.write(new Uint8Array(DOC_W * DOC_H * 4).fill(255));
 	strokeTex.clear();
+	strokeTexB.clear();
 
 	let stampCount = 0;
 	let lastStamp: {
@@ -393,6 +548,11 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	} | null = null;
 	let lastColor = '#000000';
 	let destroyed = false;
+	let currentBrush: BrushKind = 'pen';
+	/** Krita KisPainter::averageOpacity EMA for Alpha Darken. */
+	let averageOpacity = 0;
+	const lassoPoints: { x: number; y: number }[] = [];
+	const LASSO_MIN_DIST = 2.5;
 
 	/** Integer pixel AABB of the current stroke (expanded by brush radius). */
 	type Rect = { x: number; y: number; w: number; h: number };
@@ -527,8 +687,19 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		stampCount++;
 	}
 
+	function blendAverageOpacity(opacity: number, avg: number) {
+		// KisPainter::blendAverageOpacity
+		if (avg < opacity) return opacity;
+		return 0.1 * opacity + 0.9 * avg;
+	}
+
 	function paintStampsToStroke(color: string) {
 		if (destroyed || stampCount === 0) return;
+
+		if (currentBrush === 'airbrush') {
+			paintAirbrushStamps(color);
+			return;
+		}
 
 		const floats = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
 		vertexBuf.write(vertexCpu.buffer.slice(0, floats * 4));
@@ -539,7 +710,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			color: [r, g, b, 1]
 		});
 
-		strokePipeline
+		strokeWashPipeline
 			.withColorAttachment({
 				view: strokeRenderView,
 				loadOp: 'load',
@@ -547,6 +718,71 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			})
 			.draw(stampCount * VERTS_PER_STAMP);
 		stampCount = 0;
+	}
+
+	/** Sequential Krita Alpha Darken dabs (sample strokeTex → write B → blit back). */
+	function paintAirbrushStamps(color: string) {
+		const [r, g, b] = parseColor(color);
+		const single = new Float32Array(VERTS_PER_STAMP * FLOATS_PER_VERT);
+
+		for (let i = 0; i < stampCount; i++) {
+			const base = i * VERTS_PER_STAMP * FLOATS_PER_VERT;
+			const x = vertexCpu[base]!;
+			const y = vertexCpu[base + 1]!;
+			const size = vertexCpu[base + 4]!;
+			const sizeP = vertexCpu[base + 5]!;
+			const opacP = vertexCpu[base + 6]!;
+			const radius = size * 0.5 * Math.max(sizeP, 0.05);
+			const pad = Math.ceil(radius) + 2;
+			const x0 = Math.max(0, Math.floor(x - pad));
+			const y0 = Math.max(0, Math.floor(y - pad));
+			const x1 = Math.min(DOC_W, Math.ceil(x + pad));
+			const y1 = Math.min(DOC_H, Math.ceil(y + pad));
+			const w = x1 - x0;
+			const h = y1 - y0;
+			if (w < 1 || h < 1) continue;
+
+			// Preserve destination outside the dab (replace blend only covers the quad).
+			blitRect(strokeTex, strokeTexB, { x: x0, y: y0 }, { x: x0, y: y0 }, { w, h });
+
+			for (let k = 0; k < VERTS_PER_STAMP * FLOATS_PER_VERT; k++) {
+				single[k] = vertexCpu[base + k]!;
+			}
+			vertexBuf.write(single.buffer.slice(0, single.byteLength));
+
+			airbrushUniforms.write({
+				resolution: [DOC_W, DOC_H],
+				color: [r, g, b],
+				flow: AIRBRUSH_FLOW,
+				averageOpacity
+			});
+
+			strokeAirbrushPipeline
+				.withColorAttachment({
+					view: strokeRenderViewB,
+					loadOp: 'load',
+					storeOp: 'store'
+				})
+				.draw(VERTS_PER_STAMP);
+
+			blitRect(strokeTexB, strokeTex, { x: x0, y: y0 }, { x: x0, y: y0 }, { w, h });
+			averageOpacity = blendAverageOpacity(opacP, averageOpacity);
+		}
+		stampCount = 0;
+	}
+
+	function fillLassoIntoStroke(color: string): boolean {
+		if (lassoPoints.length < 3) return false;
+		const bounds = finalizeStrokeBounds();
+		if (!bounds) return false;
+
+		const [r, g, b] = parseColor(color);
+		const pixels = rasterizePolygonEvenOdd(lassoPoints, bounds, r, g, b);
+		const patch = createPatchTex(bounds.w, bounds.h);
+		patch.write(pixels);
+		blitRect(patch, strokeTex, { x: 0, y: 0 }, { x: bounds.x, y: bounds.y }, bounds);
+		patch.destroy();
+		return true;
 	}
 
 	function compositeStroke(opacity: number) {
@@ -572,17 +808,40 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			root.configureContext({ canvas, format, alphaMode: 'opaque' });
 		},
 
+		setBrush(brush: BrushKind) {
+			if (destroyed) return;
+			currentBrush = brush;
+			// Pen / lasso use the hard tip texture; airbrush is procedural.
+			if (brush !== 'airbrush') brushTex.write(hardTipPixels);
+		},
+
 		beginStroke() {
 			if (destroyed) return;
 			strokeTex.clear();
+			strokeTexB.clear();
 			lastStamp = null;
 			stampCount = 0;
+			averageOpacity = 0;
+			lassoPoints.length = 0;
 			resetStrokeBounds();
 		},
 
 		endStroke(opacity: number) {
 			if (destroyed) return;
-			paintStampsToStroke(lastColor);
+
+			if (currentBrush === 'lasso') {
+				stampCount = 0;
+				strokeTex.clear();
+				const filled = fillLassoIntoStroke(lastColor);
+				lassoPoints.length = 0;
+				if (!filled) {
+					lastStamp = null;
+					resetStrokeBounds();
+					return;
+				}
+			} else {
+				paintStampsToStroke(lastColor);
+			}
 
 			const bounds = finalizeStrokeBounds();
 			if (bounds) {
@@ -599,8 +858,11 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			}
 
 			strokeTex.clear();
+			strokeTexB.clear();
 			lastStamp = null;
 			stampCount = 0;
+			averageOpacity = 0;
+			lassoPoints.length = 0;
 			resetStrokeBounds();
 		},
 
@@ -608,7 +870,10 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			if (destroyed) return;
 			stampCount = 0;
 			lastStamp = null;
+			averageOpacity = 0;
+			lassoPoints.length = 0;
 			strokeTex.clear();
+			strokeTexB.clear();
 			resetStrokeBounds();
 		},
 
@@ -650,6 +915,43 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			lastColor = color;
 			const sizeP = Math.min(1, Math.max(0, sizePressure));
 			const opacP = Math.min(1, Math.max(0, opacityPressure));
+
+			if (currentBrush === 'lasso') {
+				const last = lassoPoints[lassoPoints.length - 1];
+				if (!last || Math.hypot(x - last.x, y - last.y) >= LASSO_MIN_DIST) {
+					lassoPoints.push({ x, y });
+					expandStrokeBounds(x, y, 1);
+				}
+				// Thin outline preview along the path (hard tip + wash blend).
+				const outlineDiameter = Math.max(2.5, brushDiameter * 0.2);
+				const spacing = spacingFor(outlineDiameter, 0.35);
+				const outlineOpac = Math.max(opacP, 0.35);
+				if (!lastStamp) {
+					queueStamp(x, y, outlineDiameter, 1, outlineOpac);
+					lastStamp = { x, y, sizePressure: 1, opacityPressure: outlineOpac };
+					if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
+					return;
+				}
+				const dx = x - lastStamp.x;
+				const dy = y - lastStamp.y;
+				const dist = Math.hypot(dx, dy);
+				if (dist < spacing) return;
+				const steps = Math.floor(dist / spacing);
+				for (let i = 1; i <= steps; i++) {
+					const t = i / steps;
+					queueStamp(
+						lastStamp.x + dx * t,
+						lastStamp.y + dy * t,
+						outlineDiameter,
+						1,
+						outlineOpac
+					);
+					if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
+				}
+				lastStamp = { x, y, sizePressure: 1, opacityPressure: outlineOpac };
+				return;
+			}
+
 			if (sizeP <= 0 && opacP <= 0) return;
 			const spacing = spacingFor(brushDiameter * Math.max(sizeP, 0.05), spacingFactor);
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createGpuPaint, type GpuPaint } from '$lib/gpuPaint';
+	import { createGpuPaint, type BrushKind, type GpuPaint } from '$lib/gpuPaint';
 	import {
 		addStrokeDistance,
 		createPenPressureState,
@@ -18,6 +18,7 @@
 		size = $bindable(8),
 		opacity = $bindable(1),
 		spacing = $bindable(0.005),
+		brush = $bindable('pen' as BrushKind),
 		pressureSize = $bindable(false),
 		pressureOpacity = $bindable(true),
 		canUndo = $bindable(false),
@@ -29,6 +30,7 @@
 		size?: number;
 		opacity?: number;
 		spacing?: number;
+		brush?: BrushKind;
 		pressureSize?: boolean;
 		pressureOpacity?: boolean;
 		canUndo?: boolean;
@@ -104,6 +106,14 @@
 		let lastRotateAngle: number | null = null;
 		const penState = createPenPressureState();
 		let lastPaintScreen: { x: number; y: number } | null = null;
+		/** Last dab site for Krita-style timed airbrush while stationary. */
+		let lastAirbrush: {
+			x: number;
+			y: number;
+			sizeP: number;
+			opacP: number;
+		} | null = null;
+		let airbrushTimer: ReturnType<typeof setInterval> | null = null;
 		let strokeStartedAt = 0;
 		let strokeTravelPx = 0;
 
@@ -266,11 +276,41 @@
 			view.y = screenY - cssH / 2 - ry;
 		}
 
+		function stopAirbrushTimer() {
+			if (airbrushTimer !== null) {
+				clearInterval(airbrushTimer);
+				airbrushTimer = null;
+			}
+		}
+
+		function startAirbrushTimer() {
+			stopAirbrushTimer();
+			if (brush !== 'airbrush') return;
+			// Krita airbrush rate ≈ dabs/sec while held still.
+			airbrushTimer = setInterval(() => {
+				if (!drawing || !strokeActive || !gpu || !lastAirbrush) return;
+				gpu.addSample(
+					lastAirbrush.x,
+					lastAirbrush.y,
+					size * 2,
+					lastAirbrush.sizeP,
+					lastAirbrush.opacP,
+					color,
+					spacing
+				);
+				gpu.flushStamps(color);
+				present();
+			}, 33);
+		}
+
 		function beginStroke() {
+			gpu?.setBrush(brush);
 			gpu?.beginStroke();
 			strokeActive = true;
 			strokeStartedAt = performance.now();
 			strokeTravelPx = 0;
+			lastAirbrush = null;
+			startAirbrushTimer();
 		}
 
 		function syncHistoryFlags() {
@@ -303,17 +343,21 @@
 
 		function endStroke() {
 			if (!strokeActive || !gpu) return;
+			stopAirbrushTimer();
 			gpu.endStroke(opacity);
 			strokeActive = false;
+			lastAirbrush = null;
 			present();
 			syncHistoryFlags();
 		}
 
 		function cancelStroke() {
 			if (!strokeActive || !gpu) return;
+			stopAirbrushTimer();
 			gpu.cancelStroke();
 			strokeActive = false;
 			drawing = false;
+			lastAirbrush = null;
 			present();
 		}
 
@@ -370,6 +414,9 @@
 			if (!gpu) return;
 			const p = screenToDoc(sx, sy);
 			gpu.addSample(p.x, p.y, size * 2, sizeP, opacP, color, spacing);
+			if (brush === 'airbrush') {
+				lastAirbrush = { x: p.x, y: p.y, sizeP, opacP };
+			}
 		}
 
 		function paintPointerSamples(e: PointerEvent) {
@@ -577,6 +624,7 @@
 					return;
 				}
 				gpu = painter;
+				gpu.setBrush(brush);
 				gpuError = null;
 				undoFn = runUndo;
 				redoFn = runRedo;
@@ -592,6 +640,7 @@
 
 		return () => {
 			cancelled = true;
+			stopAirbrushTimer();
 			undoFn = null;
 			redoFn = null;
 			historyApi = null;
