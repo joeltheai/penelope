@@ -104,6 +104,8 @@
 		let lastRotateAngle: number | null = null;
 		const penState = createPenPressureState();
 		let lastPaintScreen: { x: number; y: number } | null = null;
+		let strokeStartedAt = 0;
+		let strokeTravelPx = 0;
 
 		const touches: Record<number, { x: number; y: number }> = {};
 		let pinch: {
@@ -114,12 +116,99 @@
 			startRotation: number;
 		} | null = null;
 
+		/** Multi-finger tap: 2 → undo, 3 → redo (must stay still; distinct from pinch). */
+		const TAP_SLOP_PX = 14;
+		const TAP_MAX_MS = 400;
+		/** First finger alone briefly before others — treat as chord, not a paint stroke. */
+		const CHORD_MS = 200;
+		const CHORD_MOVE_PX = 24;
+		let multiTap: {
+			startTime: number;
+			maxFingers: number;
+			origins: Record<number, { x: number; y: number }>;
+			moved: boolean;
+			/** False if this gesture interrupted a committed paint stroke. */
+			eligible: boolean;
+		} | null = null;
+
 		function touchList() {
 			return Object.values(touches);
 		}
 
 		function touchCount() {
 			return Object.keys(touches).length;
+		}
+
+		function rebaselinePinch() {
+			if (touchCount() !== 2) return;
+			const [a, b] = touchList();
+			const midX = (a.x + b.x) / 2;
+			const midY = (a.y + b.y) / 2;
+			pinch = {
+				docPoint: screenToDoc(midX, midY),
+				startDist: Math.hypot(a.x - b.x, a.y - b.y),
+				startAngle: Math.atan2(b.y - a.y, b.x - a.x),
+				startZoom: view.zoom,
+				startRotation: view.rotation
+			};
+		}
+
+		function markMultiTapMoved() {
+			if (!multiTap || multiTap.moved) return;
+			multiTap.moved = true;
+			rebaselinePinch();
+		}
+
+		function updateMultiTapMoved() {
+			if (!multiTap || multiTap.moved) return;
+			for (const id of Object.keys(touches)) {
+				const cur = touches[Number(id)];
+				const origin = multiTap.origins[Number(id)];
+				if (!cur || !origin) continue;
+				if (Math.hypot(cur.x - origin.x, cur.y - origin.y) > TAP_SLOP_PX) {
+					markMultiTapMoved();
+					return;
+				}
+			}
+			if (touchCount() === 2 && pinch) {
+				const [a, b] = touchList();
+				const dist = Math.hypot(a.x - b.x, a.y - b.y);
+				if (Math.abs(dist - pinch.startDist) > TAP_SLOP_PX) {
+					markMultiTapMoved();
+				}
+			}
+		}
+
+		function beginOrUpdateMultiTap(committedStroke: boolean) {
+			const count = touchCount();
+			if (count < 2) return;
+			if (!multiTap) {
+				multiTap = {
+					startTime: performance.now(),
+					maxFingers: count,
+					origins: {},
+					moved: false,
+					eligible: !committedStroke
+				};
+			} else {
+				multiTap.maxFingers = Math.max(multiTap.maxFingers, count);
+				if (committedStroke) multiTap.eligible = false;
+			}
+			for (const id of Object.keys(touches)) {
+				const pid = Number(id);
+				if (!multiTap.origins[pid]) {
+					multiTap.origins[pid] = { ...touches[pid]! };
+				}
+			}
+		}
+
+		function finishMultiTap() {
+			const tap = multiTap;
+			multiTap = null;
+			if (!tap || !tap.eligible || tap.moved) return;
+			if (performance.now() - tap.startTime > TAP_MAX_MS) return;
+			if (tap.maxFingers === 2) runUndo();
+			else if (tap.maxFingers === 3) runRedo();
 		}
 
 		function screenToDoc(sx: number, sy: number) {
@@ -180,6 +269,8 @@
 		function beginStroke() {
 			gpu?.beginStroke();
 			strokeActive = true;
+			strokeStartedAt = performance.now();
+			strokeTravelPx = 0;
 		}
 
 		function syncHistoryFlags() {
@@ -216,6 +307,27 @@
 			strokeActive = false;
 			present();
 			syncHistoryFlags();
+		}
+
+		function cancelStroke() {
+			if (!strokeActive || !gpu) return;
+			gpu.cancelStroke();
+			strokeActive = false;
+			drawing = false;
+			present();
+		}
+
+		/** End or discard the current stroke when a 2nd/3rd finger lands. */
+		function resolveStrokeForMultiTouch(): boolean {
+			if (!drawing && !strokeActive) return false;
+			const nascent =
+				performance.now() - strokeStartedAt < CHORD_MS && strokeTravelPx < CHORD_MOVE_PX;
+			if (nascent) cancelStroke();
+			else {
+				endStroke();
+				drawing = false;
+			}
+			return !nascent;
 		}
 
 		/** Zoom so the full document fits in the viewport (centered). */
@@ -274,10 +386,9 @@
 			// Flushing/presenting per sample was thrashing low-power mobile GPUs.
 			for (const ce of events) {
 				if (lastPaintScreen) {
-					addStrokeDistance(
-						penState,
-						Math.hypot(ce.clientX - lastPaintScreen.x, ce.clientY - lastPaintScreen.y)
-					);
+					const step = Math.hypot(ce.clientX - lastPaintScreen.x, ce.clientY - lastPaintScreen.y);
+					addStrokeDistance(penState, step);
+					strokeTravelPx += step;
 				}
 				const { sizeP, opacP } = samplePressures(ce);
 				lastPaintScreen = { x: ce.clientX, y: ce.clientY };
@@ -298,19 +409,25 @@
 
 			if (e.pointerType === 'touch') {
 				touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-				if (touchCount() === 2) {
-					if (drawing || strokeActive) endStroke();
-					drawing = false;
-					const [a, b] = touchList();
-					const midX = (a.x + b.x) / 2;
-					const midY = (a.y + b.y) / 2;
-					pinch = {
-						docPoint: screenToDoc(midX, midY),
-						startDist: Math.hypot(a.x - b.x, a.y - b.y),
-						startAngle: Math.atan2(b.y - a.y, b.x - a.x),
-						startZoom: view.zoom,
-						startRotation: view.rotation
-					};
+				const committedStroke = resolveStrokeForMultiTouch();
+
+				if (touchCount() >= 2) {
+					beginOrUpdateMultiTap(committedStroke);
+					if (touchCount() === 2) {
+						const [a, b] = touchList();
+						const midX = (a.x + b.x) / 2;
+						const midY = (a.y + b.y) / 2;
+						pinch = {
+							docPoint: screenToDoc(midX, midY),
+							startDist: Math.hypot(a.x - b.x, a.y - b.y),
+							startAngle: Math.atan2(b.y - a.y, b.x - a.x),
+							startZoom: view.zoom,
+							startRotation: view.rotation
+						};
+					} else {
+						// 3+ fingers: tap candidate for redo, not a pinch.
+						pinch = null;
+					}
 				}
 			}
 
@@ -349,7 +466,8 @@
 		function onPointerMove(e: PointerEvent) {
 			if (e.pointerType === 'touch' && touches[e.pointerId]) {
 				touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-				if (touchCount() === 2 && pinch) {
+				updateMultiTapMoved();
+				if (touchCount() === 2 && pinch && multiTap?.moved) {
 					const MIN_Z = 0.05;
 					const MAX_Z = 20;
 					const [a, b] = touchList();
@@ -368,6 +486,7 @@
 					present();
 					return;
 				}
+				if (touchCount() >= 2) return;
 			}
 
 			if (rotating) {
@@ -405,6 +524,7 @@
 		function onPointerUp(e: PointerEvent) {
 			delete touches[e.pointerId];
 			if (touchCount() < 2) pinch = null;
+			if (touchCount() === 0) finishMultiTap();
 
 			if (drawing || strokeActive) endStroke();
 			drawing = false;

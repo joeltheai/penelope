@@ -76,6 +76,8 @@ export type GpuPaint = {
 	resize: (cssW: number, cssH: number) => void;
 	beginStroke: () => void;
 	endStroke: (opacity: number) => void;
+	/** Discard in-progress stroke without compositing or undo entry. */
+	cancelStroke: () => void;
 	undo: () => boolean;
 	redo: () => boolean;
 	canUndo: () => boolean;
@@ -599,6 +601,14 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			strokeTex.clear();
 			lastStamp = null;
 			stampCount = 0;
+			resetStrokeBounds();
+		},
+
+		cancelStroke() {
+			if (destroyed) return;
+			stampCount = 0;
+			lastStamp = null;
+			strokeTex.clear();
 			resetStrokeBounds();
 		},
 
