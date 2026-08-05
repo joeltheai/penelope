@@ -7,10 +7,13 @@ const MAX_STAMPS_PER_FLUSH = 4096;
 const FLOATS_PER_VERT = 7;
 const VERTS_PER_STAMP = 6;
 const MAX_VERT_FLOATS = MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP * FLOATS_PER_VERT;
-/** Max completed strokes kept for undo (~16 MB RGBA each). Keep this low for mobile GPU memory. */
-const MAX_HISTORY = 12;
-/** Warm textures retained for reuse; anything beyond this is destroyed. */
-const MAX_HISTORY_POOL = 2;
+/** Soft cap on undoable strokes (also bounded by HOT_PIXEL_BUDGET). */
+const MAX_HISTORY = 50;
+/**
+ * Max GPU pixels retained for undo/redo patches (prev+after counted separately).
+ * ~32M px ≈ 128 MB RGBA — enough for many small strokes, few full-canvas ones.
+ */
+const HOT_PIXEL_BUDGET = 32_000_000;
 
 const CORNERS: [number, number][] = [
 	[-1, -1],
@@ -73,8 +76,6 @@ export type GpuPaint = {
 	resize: (cssW: number, cssH: number) => void;
 	beginStroke: () => void;
 	endStroke: (opacity: number) => void;
-	/** Snapshot the document before the next stroke is committed. Clears redo. */
-	checkpoint: () => void;
 	undo: () => boolean;
 	redo: () => boolean;
 	canUndo: () => boolean;
@@ -391,38 +392,117 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	let lastColor = '#000000';
 	let destroyed = false;
 
-	type HistoryTex = typeof docTex;
-	const historyPool: HistoryTex[] = [];
-	const undoStack: HistoryTex[] = [];
-	const redoStack: HistoryTex[] = [];
+	/** Integer pixel AABB of the current stroke (expanded by brush radius). */
+	type Rect = { x: number; y: number; w: number; h: number };
+	type PatchTex = ReturnType<typeof createPatchTex>;
+	/** One undoable stroke: dirty-rect before/after patches. */
+	type StrokeEntry = { bounds: Rect; prev: PatchTex; after: PatchTex };
 
-	function createHistoryTex(): HistoryTex {
+	const undoStack: StrokeEntry[] = [];
+	const redoStack: StrokeEntry[] = [];
+
+	let strokeMinX = 0;
+	let strokeMinY = 0;
+	let strokeMaxX = 0;
+	let strokeMaxY = 0;
+	let strokeHasBounds = false;
+
+	function resetStrokeBounds() {
+		strokeHasBounds = false;
+	}
+
+	function expandStrokeBounds(x: number, y: number, radius: number) {
+		const pad = Math.ceil(radius) + 1; // +1 for AA fringe
+		const minX = x - pad;
+		const minY = y - pad;
+		const maxX = x + pad;
+		const maxY = y + pad;
+		if (!strokeHasBounds) {
+			strokeMinX = minX;
+			strokeMinY = minY;
+			strokeMaxX = maxX;
+			strokeMaxY = maxY;
+			strokeHasBounds = true;
+			return;
+		}
+		strokeMinX = Math.min(strokeMinX, minX);
+		strokeMinY = Math.min(strokeMinY, minY);
+		strokeMaxX = Math.max(strokeMaxX, maxX);
+		strokeMaxY = Math.max(strokeMaxY, maxY);
+	}
+
+	function finalizeStrokeBounds(): Rect | null {
+		if (!strokeHasBounds) return null;
+		const x0 = Math.max(0, Math.floor(strokeMinX));
+		const y0 = Math.max(0, Math.floor(strokeMinY));
+		const x1 = Math.min(DOC_W, Math.ceil(strokeMaxX));
+		const y1 = Math.min(DOC_H, Math.ceil(strokeMaxY));
+		const w = x1 - x0;
+		const h = y1 - y0;
+		if (w < 1 || h < 1) return null;
+		return { x: x0, y: y0, w, h };
+	}
+
+	function createPatchTex(w: number, h: number) {
 		return root
-			.createTexture({ size: [DOC_W, DOC_H], format: 'rgba8unorm' })
+			.createTexture({ size: [w, h], format: 'rgba8unorm' })
 			.$usage('sampled', 'render');
 	}
 
-	function acquireHistoryTex(): HistoryTex {
-		return historyPool.pop() ?? createHistoryTex();
+	function blitRect(
+		src: PatchTex | typeof docTex,
+		dst: PatchTex | typeof docTex,
+		srcOrigin: { x: number; y: number },
+		dstOrigin: { x: number; y: number },
+		size: { w: number; h: number }
+	) {
+		const encoder = root.device.createCommandEncoder();
+		encoder.copyTextureToTexture(
+			{ texture: root.unwrap(src), origin: [srcOrigin.x, srcOrigin.y, 0] },
+			{ texture: root.unwrap(dst), origin: [dstOrigin.x, dstOrigin.y, 0] },
+			[size.w, size.h, 1]
+		);
+		root.device.queue.submit([encoder.finish()]);
 	}
 
-	function releaseHistoryTex(tex: HistoryTex) {
-		if (historyPool.length >= MAX_HISTORY_POOL) {
-			tex.destroy();
-			return;
-		}
-		historyPool.push(tex);
+	function capturePatch(bounds: Rect): PatchTex {
+		const tex = createPatchTex(bounds.w, bounds.h);
+		blitRect(docTex, tex, { x: bounds.x, y: bounds.y }, { x: 0, y: 0 }, bounds);
+		return tex;
+	}
+
+	function applyPatch(bounds: Rect, patch: PatchTex) {
+		blitRect(patch, docTex, { x: 0, y: 0 }, { x: bounds.x, y: bounds.y }, bounds);
+	}
+
+	function disposeEntry(entry: StrokeEntry) {
+		entry.prev.destroy();
+		entry.after.destroy();
+	}
+
+	function entryPixels(entry: StrokeEntry) {
+		return entry.bounds.w * entry.bounds.h * 2;
+	}
+
+	function hotPixelsUsed() {
+		let n = 0;
+		for (const e of undoStack) n += entryPixels(e);
+		for (const e of redoStack) n += entryPixels(e);
+		return n;
 	}
 
 	function clearRedoStack() {
 		while (redoStack.length > 0) {
-			releaseHistoryTex(redoStack.pop()!);
+			disposeEntry(redoStack.pop()!);
 		}
 	}
 
-	function trimUndoStack() {
+	function enforceHistoryBudget() {
 		while (undoStack.length > MAX_HISTORY) {
-			releaseHistoryTex(undoStack.shift()!);
+			disposeEntry(undoStack.shift()!);
+		}
+		while (hotPixelsUsed() > HOT_PIXEL_BUDGET && undoStack.length > 0) {
+			disposeEntry(undoStack.shift()!);
 		}
 	}
 
@@ -438,6 +518,8 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		opacityPressure: number
 	) {
 		if (stampCount >= MAX_STAMPS_PER_FLUSH) return;
+		const radius = size * 0.5 * Math.max(sizePressure, 0.05);
+		expandStrokeBounds(x, y, radius);
 		const offset = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
 		appendStamp(vertexCpu, offset, x, y, size, sizePressure, opacityPressure);
 		stampCount++;
@@ -465,6 +547,17 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		stampCount = 0;
 	}
 
+	function compositeStroke(opacity: number) {
+		compositeUniforms.write({ opacity });
+		compositePipeline
+			.withColorAttachment({
+				view: docRenderView,
+				loadOp: 'load',
+				storeOp: 'store'
+			})
+			.draw(3);
+	}
+
 	return {
 		docW: DOC_W,
 		docH: DOC_H,
@@ -482,55 +575,47 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			strokeTex.clear();
 			lastStamp = null;
 			stampCount = 0;
+			resetStrokeBounds();
 		},
 
 		endStroke(opacity: number) {
 			if (destroyed) return;
 			paintStampsToStroke(lastColor);
 
-			compositeUniforms.write({ opacity });
-			compositePipeline
-				.withColorAttachment({
-					view: docRenderView,
-					loadOp: 'load',
-					storeOp: 'store'
-				})
-				.draw(3);
+			const bounds = finalizeStrokeBounds();
+			if (bounds) {
+				clearRedoStack();
+				// Snapshot the dirty rect BEFORE compositing (pixels under the stroke).
+				const prev = capturePatch(bounds);
+				compositeStroke(opacity);
+				// Snapshot AFTER compositing for redo.
+				const after = capturePatch(bounds);
+				undoStack.push({ bounds, prev, after });
+				enforceHistoryBudget();
+			} else {
+				compositeStroke(opacity);
+			}
 
 			strokeTex.clear();
 			lastStamp = null;
 			stampCount = 0;
-		},
-
-		checkpoint() {
-			if (destroyed) return;
-			clearRedoStack();
-			const snap = acquireHistoryTex();
-			snap.copyFrom(docTex);
-			undoStack.push(snap);
-			trimUndoStack();
+			resetStrokeBounds();
 		},
 
 		undo() {
 			if (destroyed || undoStack.length === 0) return false;
-			const current = acquireHistoryTex();
-			current.copyFrom(docTex);
-			redoStack.push(current);
-			const prev = undoStack.pop()!;
-			docTex.copyFrom(prev);
-			releaseHistoryTex(prev);
+			const entry = undoStack.pop()!;
+			applyPatch(entry.bounds, entry.prev);
+			redoStack.push(entry);
 			return true;
 		},
 
 		redo() {
 			if (destroyed || redoStack.length === 0) return false;
-			const current = acquireHistoryTex();
-			current.copyFrom(docTex);
-			undoStack.push(current);
-			trimUndoStack();
-			const next = redoStack.pop()!;
-			docTex.copyFrom(next);
-			releaseHistoryTex(next);
+			const entry = redoStack.pop()!;
+			applyPatch(entry.bounds, entry.after);
+			undoStack.push(entry);
+			enforceHistoryBudget();
 			return true;
 		},
 
@@ -653,12 +738,10 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 
 		destroy() {
 			destroyed = true;
-			for (const tex of undoStack) tex.destroy();
-			for (const tex of redoStack) tex.destroy();
-			for (const tex of historyPool) tex.destroy();
+			for (const e of undoStack) disposeEntry(e);
+			for (const e of redoStack) disposeEntry(e);
 			undoStack.length = 0;
 			redoStack.length = 0;
-			historyPool.length = 0;
 			root.destroy();
 		}
 	};

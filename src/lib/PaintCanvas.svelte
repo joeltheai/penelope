@@ -212,7 +212,6 @@
 
 		function endStroke() {
 			if (!strokeActive || !gpu) return;
-			gpu.checkpoint();
 			gpu.endStroke(opacity);
 			strokeActive = false;
 			present();
