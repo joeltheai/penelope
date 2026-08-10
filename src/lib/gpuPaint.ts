@@ -103,6 +103,8 @@ export type GpuPaint = {
 		spacingFactor?: number
 	) => void;
 	flushStamps: (color: string) => void;
+	/** Sample document color at doc-space pixel; returns `#rrggbb` or null if out of bounds. */
+	sampleColor: (x: number, y: number) => Promise<string | null>;
 	present: (view: ViewState, cssW: number, cssH: number, opacity: number, strokeActive: boolean) => void;
 	destroy: () => void;
 };
@@ -967,6 +969,36 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 
 		flushStamps(color: string) {
 			paintStampsToStroke(color);
+		},
+
+		async sampleColor(x: number, y: number) {
+			if (destroyed) return null;
+			const px = Math.floor(x);
+			const py = Math.floor(y);
+			if (px < 0 || py < 0 || px >= DOC_W || py >= DOC_H) return null;
+
+			// WebGPU requires bytesPerRow ≥ 256 for buffer copies.
+			const bytesPerRow = 256;
+			const device = root.device;
+			const staging = device.createBuffer({
+				size: bytesPerRow,
+				usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+			});
+			const encoder = device.createCommandEncoder();
+			encoder.copyTextureToBuffer(
+				{ texture: root.unwrap(docTex), origin: [px, py, 0] },
+				{ buffer: staging, bytesPerRow },
+				[1, 1, 1]
+			);
+			device.queue.submit([encoder.finish()]);
+			await staging.mapAsync(GPUMapMode.READ);
+			const bytes = new Uint8Array(staging.getMappedRange(0, 4));
+			const hex = `#${[bytes[0], bytes[1], bytes[2]]
+				.map((n) => n.toString(16).padStart(2, '0'))
+				.join('')}`;
+			staging.unmap();
+			staging.destroy();
+			return hex;
 		},
 
 		present(view: ViewState, cssW: number, cssH: number, opacity: number, strokeActive: boolean) {

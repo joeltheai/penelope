@@ -24,7 +24,8 @@
 		canUndo = $bindable(false),
 		canRedo = $bindable(false),
 		historyApi = $bindable(null as null | HistoryApi),
-		zoom = $bindable(1)
+		zoom = $bindable(1),
+		eyedropper = $bindable(false)
 	}: {
 		color?: string;
 		size?: number;
@@ -37,6 +38,7 @@
 		canRedo?: boolean;
 		historyApi?: null | HistoryApi;
 		zoom?: number;
+		eyedropper?: boolean;
 	} = $props();
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -57,6 +59,10 @@
 	}
 
 	function onKeyDown(e: KeyboardEvent) {
+		if (e.code === 'Escape' && eyedropper) {
+			eyedropper = false;
+			return;
+		}
 		if (e.code === 'Space') {
 			e.preventDefault();
 			space = true;
@@ -464,6 +470,18 @@
 			const active = document.activeElement;
 			if (active instanceof HTMLElement && active !== surface) active.blur();
 
+			if (eyedropper) {
+				if (e.button !== 0 && e.pointerType === 'mouse') return;
+				const p = screenToDoc(e.clientX, e.clientY);
+				void (async () => {
+					const hex = await gpu?.sampleColor(p.x, p.y);
+					if (!hex) return;
+					color = hex;
+					eyedropper = false;
+				})();
+				return;
+			}
+
 			if (e.pointerType === 'touch') {
 				touches[e.pointerId] = { x: e.clientX, y: e.clientY };
 				const committedStroke = resolveStrokeForMultiTouch();
@@ -682,6 +700,7 @@
 <canvas
 	bind:this={canvasEl}
 	class="fixed inset-0 block h-full w-full touch-none select-none [-webkit-touch-callout:none]"
+	class:cursor-crosshair={eyedropper}
 	style:background="#1c1c1d"
 ></canvas>
 
