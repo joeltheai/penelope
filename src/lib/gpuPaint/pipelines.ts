@@ -220,14 +220,13 @@ export function createPaintPipelines(deps: {
 			const docUv = d.vec2f(docX / u.docSize.x, docY / u.docSize.y);
 			const inDoc = docUv.x >= 0 && docUv.x <= 1 && docUv.y >= 0 && docUv.y <= 1;
 
-			if (inDoc) {
-				const docSample = std.textureSample(docViewSlot.$, linearSamp.$, docUv);
-				const strokeSample = std.textureSample(strokeViewSlot.$, linearSamp.$, docUv);
-				const factor = u.strokeOpacity * u.strokeActive;
-				const a = strokeSample.a * factor;
-				const rgb = strokeSample.rgb * factor + docSample.rgb * (1 - a);
-				return d.vec4f(rgb, 1);
-			}
+			// Always sample — Chrome rejects textureSample inside non-uniform `if (inDoc)`.
+			const safeUv = std.clamp(docUv, d.vec2f(0), d.vec2f(1));
+			const docSample = std.textureSample(docViewSlot.$, linearSamp.$, safeUv);
+			const strokeSample = std.textureSample(strokeViewSlot.$, linearSamp.$, safeUv);
+			const factor = u.strokeOpacity * u.strokeActive;
+			const a = strokeSample.a * factor;
+			const docRgb = strokeSample.rgb * factor + docSample.rgb * (1 - a);
 
 			// Screen-fixed backdrop grid (outside the document only)
 			const spacing = GRID_SPACING;
@@ -252,7 +251,8 @@ export function createPaintPipelines(deps: {
 			const minorCol = d.vec3f(GRID_LINE[0], GRID_LINE[1], GRID_LINE[2]);
 			const majorCol = d.vec3f(GRID_MAJOR[0], GRID_MAJOR[1], GRID_MAJOR[2]);
 			const withMinor = std.mix(bg, minorCol, minor);
-			const rgb = std.mix(withMinor, majorCol, major);
+			const gridRgb = std.mix(withMinor, majorCol, major);
+			const rgb = std.select(gridRgb, docRgb, inDoc);
 			return d.vec4f(rgb, 1);
 		});
 
