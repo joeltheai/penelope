@@ -1,8 +1,16 @@
 import tgpu, { d, std, common } from 'typegpu';
 
-const DOC_W = 2000;
-const DOC_H = 2000;
+const DEFAULT_DOC_W = 2000;
+const DEFAULT_DOC_H = 2000;
+const MIN_DOC_SIZE = 64;
+const MAX_DOC_SIZE = 8192;
 const BRUSH_SIZE = 128;
+
+/** Clamp document dimension to a safe GPU texture size. */
+export function sanitizeDocSize(n: number): number {
+	const v = Math.round(Number.isFinite(n) ? n : DEFAULT_DOC_W);
+	return Math.min(MAX_DOC_SIZE, Math.max(MIN_DOC_SIZE, v));
+}
 const MAX_STAMPS_PER_FLUSH = 4096;
 const FLOATS_PER_VERT = 7;
 const VERTS_PER_STAMP = 6;
@@ -84,6 +92,16 @@ export type GpuPaint = {
 	docW: number;
 	docH: number;
 	resize: (cssW: number, cssH: number) => void;
+	/**
+	 * Change the document pixel size (Krita `resizeImage(newRect)`).
+	 * `cropX`/`cropY` are newRect.topLeft() in old document space.
+	 * Pixels are translated — never scaled. New areas are white.
+	 */
+	resizeDocument: (
+		width: number,
+		height: number,
+		opts?: { cropX?: number; cropY?: number }
+	) => Promise<boolean>;
 	setBrush: (brush: BrushKind) => void;
 	beginStroke: () => void;
 	endStroke: (opacity: number) => void;
@@ -233,7 +251,10 @@ function webGpuUnavailableMessage(): string {
 	return 'WebGPU is not available here. On iPad it needs iPadOS 26+ (Safari 26); feature flags on older versions usually do not expose navigator.gpu.';
 }
 
-export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPaint> {
+export async function createGpuPaint(
+	canvas: HTMLCanvasElement,
+	opts?: { width?: number; height?: number }
+): Promise<GpuPaint> {
 	if (!navigator.gpu) throw new Error(webGpuUnavailableMessage());
 
 	let root: Awaited<ReturnType<typeof tgpu.init>>;
@@ -254,16 +275,17 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	const format = navigator.gpu.getPreferredCanvasFormat();
 	const context = root.configureContext({ canvas, format, alphaMode: 'opaque' });
 
-	const docTex = root
-		.createTexture({ size: [DOC_W, DOC_H], format: 'rgba8unorm' })
-		.$usage('sampled', 'render');
-	const strokeTex = root
-		.createTexture({ size: [DOC_W, DOC_H], format: 'rgba8unorm' })
-		.$usage('sampled', 'render');
+	let docW = sanitizeDocSize(opts?.width ?? DEFAULT_DOC_W);
+	let docH = sanitizeDocSize(opts?.height ?? DEFAULT_DOC_H);
+
+	function createDocTexture(w: number, h: number) {
+		return root.createTexture({ size: [w, h], format: 'rgba8unorm' }).$usage('sampled', 'render');
+	}
+
+	let docTex = createDocTexture(docW, docH);
+	let strokeTex = createDocTexture(docW, docH);
 	/** Ping-pong target for Krita Alpha Darken airbrush dabs (sample strokeTex, write here). */
-	const strokeTexB = root
-		.createTexture({ size: [DOC_W, DOC_H], format: 'rgba8unorm' })
-		.$usage('sampled', 'render');
+	let strokeTexB = createDocTexture(docW, docH);
 	const brushTex = root
 		.createTexture({ size: [BRUSH_SIZE, BRUSH_SIZE], format: 'rgba8unorm' })
 		.$usage('sampled');
@@ -271,21 +293,25 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	const hardTipPixels = makeHardBrushPixels(BRUSH_SIZE);
 	brushTex.write(hardTipPixels);
 
-	const docView = docTex.createView();
-	const strokeView = strokeTex.createView();
+	let docView = docTex.createView();
+	let strokeView = strokeTex.createView();
 	const brushView = brushTex.createView();
-	const docRenderView = docTex.createView('render');
-	const strokeRenderView = strokeTex.createView('render');
-	const strokeRenderViewB = strokeTexB.createView('render');
+	let docRenderView = docTex.createView('render');
+	let strokeRenderView = strokeTex.createView('render');
+	let strokeRenderViewB = strokeTexB.createView('render');
+
+	/** Filled via root.with(...) when (re)building pipelines after a doc resize. */
+	const docViewSlot = tgpu.slot<typeof docView>();
+	const strokeViewSlot = tgpu.slot<typeof strokeView>();
 
 	const linearSamp = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
 	const strokeUniforms = root.createUniform(StrokeUniforms, {
-		resolution: [DOC_W, DOC_H],
+		resolution: [docW, docH],
 		color: [0, 0, 0, 1]
 	});
 	const airbrushUniforms = root.createUniform(AirbrushUniforms, {
-		resolution: [DOC_W, DOC_H],
+		resolution: [docW, docH],
 		color: [0, 0, 0],
 		flow: AIRBRUSH_FLOW,
 		averageOpacity: 0
@@ -299,7 +325,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		rotate: 0,
 		strokeOpacity: 1,
 		strokeActive: 0,
-		docSize: [DOC_W, DOC_H]
+		docSize: [docW, docH]
 	});
 
 	const stampLayout = tgpu.vertexLayout(d.disarrayOf(StampVertex));
@@ -374,108 +400,167 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	});
 
 	/**
-	 * Krita Creamy Alpha Darken into the stroke layer (wash).
-	 * Never decreases alpha; soft tip fills toward opacity cap via flow.
-	 * Same-color lock → premul C*newA (KoCompositeOpAlphaDarken.h).
+	 * Pipelines that sample doc/stroke textures must be rebuilt when those
+	 * textures are replaced (TypeGPU captures the view object at shell creation).
 	 */
-	const airbrushFragment = tgpu.fragmentFn({
-		in: { tipUv: d.vec2f, docUv: d.vec2f, opacityPressure: d.f32 },
-		out: d.vec4f
-	})((input) => {
-		'use gpu';
-		const u = airbrushUniforms.$;
-		const dst = std.textureSample(strokeView.$, linearSamp.$, input.docUv);
-		const dstA = dst.a;
+	let strokeAirbrushPipeline: ReturnType<typeof buildAirbrushPipeline>;
+	let compositePipeline: ReturnType<typeof buildCompositePipeline>;
+	let presentPipeline: ReturnType<typeof buildPresentPipeline>;
 
-		const delta = input.tipUv - d.vec2f(0.5);
-		const r = std.length(delta) * 2;
-		const t = std.max(1 - r, 0);
-		const msk = t * t * (3 - 2 * t);
+	function buildAirbrushPipeline() {
+		/**
+		 * Krita Creamy Alpha Darken into the stroke layer (wash).
+		 * Never decreases alpha; soft tip fills toward opacity cap via flow.
+		 * Same-color lock → premul C*newA (KoCompositeOpAlphaDarken.h).
+		 */
+		const airbrushFragment = tgpu.fragmentFn({
+			in: { tipUv: d.vec2f, docUv: d.vec2f, opacityPressure: d.f32 },
+			out: d.vec4f
+		})((input) => {
+			'use gpu';
+			const u = airbrushUniforms.$;
+			const dst = std.textureSample(strokeViewSlot.$, linearSamp.$, input.docUv);
+			const dstA = dst.a;
 
-		const opacity = input.opacityPressure;
-		const flow = u.flow;
-		const averageOpacity = u.averageOpacity;
-		const srcAlpha = msk * opacity;
+			const delta = input.tipUv - d.vec2f(0.5);
+			const r = std.length(delta) * 2;
+			const t = std.max(1 - r, 0);
+			const msk = t * t * (3 - 2 * t);
 
-		// KoCompositeOpAlphaDarken::calculateAlpha (Creamy wrapper)
-		const avgSafe = std.max(averageOpacity, 1e-5);
-		const fullWhenAvgHigh = std.select(
-			dstA,
-			std.mix(srcAlpha, averageOpacity, dstA / avgSafe),
-			averageOpacity > dstA
-		);
-		const fullWhenOpHigh = std.select(dstA, std.mix(dstA, opacity, msk), opacity > dstA);
-		const fullFlowAlpha = std.select(fullWhenOpHigh, fullWhenAvgHigh, averageOpacity > opacity);
-		const newA = std.mix(dstA, fullFlowAlpha, flow);
-		const C = u.color;
-		return d.vec4f(C * newA, newA);
-	});
+			const opacity = input.opacityPressure;
+			const flow = u.flow;
+			const averageOpacity = u.averageOpacity;
+			const srcAlpha = msk * opacity;
 
-	const compositeFragment = tgpu.fragmentFn({
-		in: { uv: d.vec2f },
-		out: d.vec4f
-	})((input) => {
-		'use gpu';
-		const s = std.textureSample(strokeView.$, linearSamp.$, input.uv);
-		const opacity = compositeUniforms.$.opacity;
-		return d.vec4f(s.rgb * opacity, s.a * opacity);
-	});
+			// KoCompositeOpAlphaDarken::calculateAlpha (Creamy wrapper)
+			const avgSafe = std.max(averageOpacity, 1e-5);
+			const fullWhenAvgHigh = std.select(
+				dstA,
+				std.mix(srcAlpha, averageOpacity, dstA / avgSafe),
+				averageOpacity > dstA
+			);
+			const fullWhenOpHigh = std.select(dstA, std.mix(dstA, opacity, msk), opacity > dstA);
+			const fullFlowAlpha = std.select(fullWhenOpHigh, fullWhenAvgHigh, averageOpacity > opacity);
+			const newA = std.mix(dstA, fullFlowAlpha, flow);
+			const C = u.color;
+			return d.vec4f(C * newA, newA);
+		});
 
-	const presentFragment = tgpu.fragmentFn({
-		in: { uv: d.vec2f },
-		out: d.vec4f
-	})((input) => {
-		'use gpu';
-		const u = presentUniforms.$;
-		const screen = input.uv * u.viewport;
-		// Match PaintCanvas.screenToDoc: pan → unrotate → unzoom
-		const x = screen.x - u.center.x - u.pan.x;
-		const y = screen.y - u.center.y - u.pan.y;
-		const c = std.cos(-u.rotate);
-		const s = std.sin(-u.rotate);
-		const ux = x * c - y * s;
-		const uy = x * s + y * c;
-		const docX = ux / u.zoom + u.docSize.x * 0.5;
-		const docY = uy / u.zoom + u.docSize.y * 0.5;
-		const docUv = d.vec2f(docX / u.docSize.x, docY / u.docSize.y);
-		const inDoc =
-			docUv.x >= 0 && docUv.x <= 1 && docUv.y >= 0 && docUv.y <= 1;
+		return root
+			.with(strokeViewSlot, strokeView)
+			.createRenderPipeline({
+				attribs: { ...stampLayout.attrib },
+				vertex: airbrushVertex,
+				fragment: airbrushFragment,
+				targets: {
+					format: 'rgba8unorm',
+					blend: {
+						color: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' },
+						alpha: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' }
+					}
+				},
+				primitive: { topology: 'triangle-list' }
+			})
+			.with(stampLayout, vertexBuf);
+	}
 
-		if (inDoc) {
-			const docSample = std.textureSample(docView.$, linearSamp.$, docUv);
-			const strokeSample = std.textureSample(strokeView.$, linearSamp.$, docUv);
-			const factor = u.strokeOpacity * u.strokeActive;
-			const a = strokeSample.a * factor;
-			const rgb = strokeSample.rgb * factor + docSample.rgb * (1 - a);
+	function buildCompositePipeline() {
+		const compositeFragment = tgpu.fragmentFn({
+			in: { uv: d.vec2f },
+			out: d.vec4f
+		})((input) => {
+			'use gpu';
+			const s = std.textureSample(strokeViewSlot.$, linearSamp.$, input.uv);
+			const opacity = compositeUniforms.$.opacity;
+			return d.vec4f(s.rgb * opacity, s.a * opacity);
+		});
+
+		return root.with(strokeViewSlot, strokeView).createRenderPipeline({
+			vertex: common.fullScreenTriangle,
+			fragment: compositeFragment,
+			targets: {
+				format: 'rgba8unorm',
+				blend: {
+					color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+					alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
+				}
+			},
+			primitive: { topology: 'triangle-list' }
+		});
+	}
+
+	function buildPresentPipeline() {
+		const presentFragment = tgpu.fragmentFn({
+			in: { uv: d.vec2f },
+			out: d.vec4f
+		})((input) => {
+			'use gpu';
+			const u = presentUniforms.$;
+			const screen = input.uv * u.viewport;
+			// Match PaintCanvas.screenToDoc: pan → unrotate → unzoom
+			const x = screen.x - u.center.x - u.pan.x;
+			const y = screen.y - u.center.y - u.pan.y;
+			const c = std.cos(-u.rotate);
+			const s = std.sin(-u.rotate);
+			const ux = x * c - y * s;
+			const uy = x * s + y * c;
+			const docX = ux / u.zoom + u.docSize.x * 0.5;
+			const docY = uy / u.zoom + u.docSize.y * 0.5;
+			const docUv = d.vec2f(docX / u.docSize.x, docY / u.docSize.y);
+			const inDoc = docUv.x >= 0 && docUv.x <= 1 && docUv.y >= 0 && docUv.y <= 1;
+
+			if (inDoc) {
+				const docSample = std.textureSample(docViewSlot.$, linearSamp.$, docUv);
+				const strokeSample = std.textureSample(strokeViewSlot.$, linearSamp.$, docUv);
+				const factor = u.strokeOpacity * u.strokeActive;
+				const a = strokeSample.a * factor;
+				const rgb = strokeSample.rgb * factor + docSample.rgb * (1 - a);
+				return d.vec4f(rgb, 1);
+			}
+
+			// Screen-fixed backdrop grid (outside the document only)
+			const spacing = GRID_SPACING;
+			const majorSpacing = spacing * GRID_MAJOR_EVERY;
+			const fx = std.fract(screen.x / spacing);
+			const fy = std.fract(screen.y / spacing);
+			const dx = std.min(fx, 1 - fx) * spacing;
+			const dy = std.min(fy, 1 - fy) * spacing;
+			const dist = std.min(dx, dy);
+
+			const mfx = std.fract(screen.x / majorSpacing);
+			const mfy = std.fract(screen.y / majorSpacing);
+			const mdx = std.min(mfx, 1 - mfx) * majorSpacing;
+			const mdy = std.min(mfy, 1 - mfy) * majorSpacing;
+			const majorDist = std.min(mdx, mdy);
+
+			const half = 0.6;
+			const minor = 1 - std.smoothstep(0, half, dist);
+			const major = 1 - std.smoothstep(0, half * 1.25, majorDist);
+
+			const bg = d.vec3f(GRID_BG[0], GRID_BG[1], GRID_BG[2]);
+			const minorCol = d.vec3f(GRID_LINE[0], GRID_LINE[1], GRID_LINE[2]);
+			const majorCol = d.vec3f(GRID_MAJOR[0], GRID_MAJOR[1], GRID_MAJOR[2]);
+			const withMinor = std.mix(bg, minorCol, minor);
+			const rgb = std.mix(withMinor, majorCol, major);
 			return d.vec4f(rgb, 1);
-		}
+		});
 
-		// Screen-fixed backdrop grid (outside the document only)
-		const spacing = GRID_SPACING;
-		const majorSpacing = spacing * GRID_MAJOR_EVERY;
-		const fx = std.fract(screen.x / spacing);
-		const fy = std.fract(screen.y / spacing);
-		const dx = std.min(fx, 1 - fx) * spacing;
-		const dy = std.min(fy, 1 - fy) * spacing;
-		const dist = std.min(dx, dy);
+		return root
+			.with(docViewSlot, docView)
+			.with(strokeViewSlot, strokeView)
+			.createRenderPipeline({
+				vertex: common.fullScreenTriangle,
+				fragment: presentFragment,
+				targets: { format },
+				primitive: { topology: 'triangle-list' }
+			});
+	}
 
-		const mfx = std.fract(screen.x / majorSpacing);
-		const mfy = std.fract(screen.y / majorSpacing);
-		const mdx = std.min(mfx, 1 - mfx) * majorSpacing;
-		const mdy = std.min(mfy, 1 - mfy) * majorSpacing;
-		const majorDist = std.min(mdx, mdy);
-
-		const half = 0.6;
-		const minor = 1 - std.smoothstep(0, half, dist);
-		const major = 1 - std.smoothstep(0, half * 1.25, majorDist);
-
-		const bg = d.vec3f(GRID_BG[0], GRID_BG[1], GRID_BG[2]);
-		const minorCol = d.vec3f(GRID_LINE[0], GRID_LINE[1], GRID_LINE[2]);
-		const majorCol = d.vec3f(GRID_MAJOR[0], GRID_MAJOR[1], GRID_MAJOR[2]);
-		const withMinor = std.mix(bg, minorCol, minor);
-		const rgb = std.mix(withMinor, majorCol, major);
-		return d.vec4f(rgb, 1);
-	});
+	function rebuildDocSamplePipelines() {
+		strokeAirbrushPipeline = buildAirbrushPipeline();
+		compositePipeline = buildCompositePipeline();
+		presentPipeline = buildPresentPipeline();
+	}
 
 	const strokeWashPipeline = root
 		.createRenderPipeline({
@@ -494,45 +579,10 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		})
 		.with(stampLayout, vertexBuf);
 
-	/** Alpha Darken writes absolute premul coverage — replace, no GPU blend. */
-	const strokeAirbrushPipeline = root
-		.createRenderPipeline({
-			attribs: { ...stampLayout.attrib },
-			vertex: airbrushVertex,
-			fragment: airbrushFragment,
-			targets: {
-				format: 'rgba8unorm',
-				blend: {
-					color: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' },
-					alpha: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' }
-				}
-			},
-			primitive: { topology: 'triangle-list' }
-		})
-		.with(stampLayout, vertexBuf);
-
-	const compositePipeline = root.createRenderPipeline({
-		vertex: common.fullScreenTriangle,
-		fragment: compositeFragment,
-		targets: {
-			format: 'rgba8unorm',
-			blend: {
-				color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-				alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
-			}
-		},
-		primitive: { topology: 'triangle-list' }
-	});
-
-	const presentPipeline = root.createRenderPipeline({
-		vertex: common.fullScreenTriangle,
-		fragment: presentFragment,
-		targets: { format },
-		primitive: { topology: 'triangle-list' }
-	});
+	rebuildDocSamplePipelines();
 
 	// White document background (Texture.clear is zero-fill only).
-	docTex.write(new Uint8Array(DOC_W * DOC_H * 4).fill(255));
+	docTex.write(new Uint8Array(docW * docH * 4).fill(255));
 	strokeTex.clear();
 	strokeTexB.clear();
 
@@ -594,8 +644,8 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		if (!strokeHasBounds) return null;
 		const x0 = Math.max(0, Math.floor(strokeMinX));
 		const y0 = Math.max(0, Math.floor(strokeMinY));
-		const x1 = Math.min(DOC_W, Math.ceil(strokeMaxX));
-		const y1 = Math.min(DOC_H, Math.ceil(strokeMaxY));
+		const x1 = Math.min(docW, Math.ceil(strokeMaxX));
+		const y1 = Math.min(docH, Math.ceil(strokeMaxY));
 		const w = x1 - x0;
 		const h = y1 - y0;
 		if (w < 1 || h < 1) return null;
@@ -703,7 +753,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 
 		const [r, g, b] = parseColor(color);
 		strokeUniforms.write({
-			resolution: [DOC_W, DOC_H],
+			resolution: [docW, docH],
 			color: [r, g, b, 1]
 		});
 
@@ -733,8 +783,8 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			const pad = Math.ceil(radius) + 2;
 			const x0 = Math.max(0, Math.floor(x - pad));
 			const y0 = Math.max(0, Math.floor(y - pad));
-			const x1 = Math.min(DOC_W, Math.ceil(x + pad));
-			const y1 = Math.min(DOC_H, Math.ceil(y + pad));
+			const x1 = Math.min(docW, Math.ceil(x + pad));
+			const y1 = Math.min(docH, Math.ceil(y + pad));
 			const w = x1 - x0;
 			const h = y1 - y0;
 			if (w < 1 || h < 1) continue;
@@ -748,7 +798,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			vertexBuf.write(single.buffer.slice(0, single.byteLength));
 
 			airbrushUniforms.write({
-				resolution: [DOC_W, DOC_H],
+				resolution: [docW, docH],
 				color: [r, g, b],
 				flow: AIRBRUSH_FLOW,
 				averageOpacity
@@ -793,9 +843,79 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			.draw(3);
 	}
 
+	async function readDocPixels(x0: number, y0: number, w: number, h: number): Promise<Uint8Array | null> {
+		if (destroyed || w < 1 || h < 1) return null;
+		const bytesPerPixel = 4;
+		const unpadded = w * bytesPerPixel;
+		const bytesPerRow = Math.max(256, Math.ceil(unpadded / 256) * 256);
+		const device = root.device;
+		const staging = device.createBuffer({
+			size: bytesPerRow * h,
+			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+		});
+		const encoder = device.createCommandEncoder();
+		encoder.copyTextureToBuffer(
+			{ texture: root.unwrap(docTex), origin: [x0, y0, 0] },
+			{ buffer: staging, bytesPerRow },
+			[w, h, 1]
+		);
+		device.queue.submit([encoder.finish()]);
+		await staging.mapAsync(GPUMapMode.READ);
+		const mapped = new Uint8Array(staging.getMappedRange());
+		const tightly = new Uint8Array(w * h * 4);
+		for (let row = 0; row < h; row++) {
+			tightly.set(mapped.subarray(row * bytesPerRow, row * bytesPerRow + unpadded), row * unpadded);
+		}
+		staging.unmap();
+		staging.destroy();
+		return tightly;
+	}
+
+	async function samplePatchAt(x: number, y: number, radius: number) {
+		if (destroyed) return null;
+		const cx = Math.floor(x);
+		const cy = Math.floor(y);
+		if (cx < 0 || cy < 0 || cx >= docW || cy >= docH) return null;
+
+		const r = Math.max(0, Math.floor(radius));
+		const full = r * 2 + 1;
+		const x0 = Math.max(0, cx - r);
+		const y0 = Math.max(0, cy - r);
+		const x1 = Math.min(docW, cx + r + 1);
+		const y1 = Math.min(docH, cy + r + 1);
+		const srcW = x1 - x0;
+		const srcH = y1 - y0;
+		if (srcW < 1 || srcH < 1) return null;
+
+		const patch = await readDocPixels(x0, y0, srcW, srcH);
+		if (!patch) return null;
+
+		// Full loupe buffer; outside-doc samples stay white like paper.
+		const pixels = new Uint8ClampedArray(full * full * 4);
+		pixels.fill(255);
+		const destOx = x0 - (cx - r);
+		const destOy = y0 - (cy - r);
+		for (let row = 0; row < srcH; row++) {
+			const srcOff = row * srcW * 4;
+			const dstOff = ((destOy + row) * full + destOx) * 4;
+			pixels.set(patch.subarray(srcOff, srcOff + srcW * 4), dstOff);
+		}
+
+		const i = (r * full + r) * 4;
+		const hex = `#${[pixels[i], pixels[i + 1], pixels[i + 2]]
+			.map((n) => n.toString(16).padStart(2, '0'))
+			.join('')}`;
+
+		return { width: full, height: full, pixels, hex };
+	}
+
 	return {
-		docW: DOC_W,
-		docH: DOC_H,
+		get docW() {
+			return docW;
+		},
+		get docH() {
+			return docH;
+		},
 
 		resize(cssW: number, cssH: number) {
 			if (destroyed) return;
@@ -803,6 +923,81 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			canvas.width = Math.max(1, Math.round(cssW * dpr));
 			canvas.height = Math.max(1, Math.round(cssH * dpr));
 			root.configureContext({ canvas, format, alphaMode: 'opaque' });
+		},
+
+		async resizeDocument(width: number, height: number, opts?: { cropX?: number; cropY?: number }) {
+			if (destroyed) return false;
+			const nextW = sanitizeDocSize(width);
+			const nextH = sanitizeDocSize(height);
+			// Krita resizeImage(newRect): newRect in old image coords.
+			// Content is translated by (-cropX, -cropY) — never resampled.
+			const cropX = Math.round(opts?.cropX ?? 0);
+			const cropY = Math.round(opts?.cropY ?? 0);
+			if (nextW === docW && nextH === docH && cropX === 0 && cropY === 0) {
+				return false;
+			}
+
+			stampCount = 0;
+			lastStamp = null;
+			averageOpacity = 0;
+			lassoPoints.length = 0;
+			resetStrokeBounds();
+			while (undoStack.length > 0) disposeEntry(undoStack.pop()!);
+			while (redoStack.length > 0) disposeEntry(redoStack.pop()!);
+
+			const oldW = docW;
+			const oldH = docH;
+
+			// Read the whole document to CPU (eyedropper readback path).
+			// Krita keeps pixels by shifting layer data; we do the
+			// equivalent translate on the CPU then re-upload.
+			const oldPixels = await readDocPixels(0, 0, oldW, oldH);
+			if (!oldPixels || destroyed) return false;
+
+			const oldDoc = docTex;
+			const oldStroke = strokeTex;
+			const oldStrokeB = strokeTexB;
+
+			docW = nextW;
+			docH = nextH;
+			docTex = createDocTexture(nextW, nextH);
+			strokeTex = createDocTexture(nextW, nextH);
+			strokeTexB = createDocTexture(nextW, nextH);
+			docView = docTex.createView();
+			strokeView = strokeTex.createView();
+			docRenderView = docTex.createView('render');
+			strokeRenderView = strokeTex.createView('render');
+			strokeRenderViewB = strokeTexB.createView('render');
+
+			const pixels = new Uint8Array(nextW * nextH * 4).fill(255);
+			const srcX0 = Math.max(0, cropX);
+			const srcY0 = Math.max(0, cropY);
+			const srcX1 = Math.min(oldW, cropX + nextW);
+			const srcY1 = Math.min(oldH, cropY + nextH);
+			const dstX = srcX0 - cropX;
+			const dstY = srcY0 - cropY;
+			const copyW = srcX1 - srcX0;
+			const copyH = srcY1 - srcY0;
+			if (copyW > 0 && copyH > 0) {
+				for (let row = 0; row < copyH; row++) {
+					const srcOff = ((srcY0 + row) * oldW + srcX0) * 4;
+					const dstOff = ((dstY + row) * nextW + dstX) * 4;
+					pixels.set(oldPixels.subarray(srcOff, srcOff + copyW * 4), dstOff);
+				}
+			}
+
+			docTex.write(pixels);
+			strokeTex.clear();
+			strokeTexB.clear();
+			rebuildDocSamplePipelines();
+
+			void root.device.queue.onSubmittedWorkDone().then(() => {
+				oldDoc.destroy();
+				oldStroke.destroy();
+				oldStrokeB.destroy();
+			});
+
+			return true;
 		},
 
 		setBrush(brush: BrushKind) {
@@ -1005,7 +1200,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 				rotate: view.rotation,
 				strokeOpacity: opacity,
 				strokeActive: strokeActive ? 1 : 0,
-				docSize: [DOC_W, DOC_H]
+				docSize: [docW, docH]
 			});
 
 			presentPipeline
@@ -1027,61 +1222,6 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			root.destroy();
 		}
 	};
-
-	async function samplePatchAt(x: number, y: number, radius: number) {
-		if (destroyed) return null;
-		const cx = Math.floor(x);
-		const cy = Math.floor(y);
-		if (cx < 0 || cy < 0 || cx >= DOC_W || cy >= DOC_H) return null;
-
-		const r = Math.max(0, Math.floor(radius));
-		const full = r * 2 + 1;
-		const x0 = Math.max(0, cx - r);
-		const y0 = Math.max(0, cy - r);
-		const x1 = Math.min(DOC_W, cx + r + 1);
-		const y1 = Math.min(DOC_H, cy + r + 1);
-		const srcW = x1 - x0;
-		const srcH = y1 - y0;
-		if (srcW < 1 || srcH < 1) return null;
-
-		const bytesPerPixel = 4;
-		const unpadded = srcW * bytesPerPixel;
-		const bytesPerRow = Math.max(256, Math.ceil(unpadded / 256) * 256);
-		const device = root.device;
-		const staging = device.createBuffer({
-			size: bytesPerRow * srcH,
-			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-		});
-		const encoder = device.createCommandEncoder();
-		encoder.copyTextureToBuffer(
-			{ texture: root.unwrap(docTex), origin: [x0, y0, 0] },
-			{ buffer: staging, bytesPerRow },
-			[srcW, srcH, 1]
-		);
-		device.queue.submit([encoder.finish()]);
-		await staging.mapAsync(GPUMapMode.READ);
-		const mapped = new Uint8Array(staging.getMappedRange());
-
-		// Full loupe buffer; outside-doc samples stay white like paper.
-		const pixels = new Uint8ClampedArray(full * full * 4);
-		pixels.fill(255);
-		const destOx = x0 - (cx - r);
-		const destOy = y0 - (cy - r);
-		for (let row = 0; row < srcH; row++) {
-			const srcOff = row * bytesPerRow;
-			const dstOff = ((destOy + row) * full + destOx) * 4;
-			pixels.set(mapped.subarray(srcOff, srcOff + unpadded), dstOff);
-		}
-
-		const i = (r * full + r) * 4;
-		const hex = `#${[pixels[i], pixels[i + 1], pixels[i + 2]]
-			.map((n) => n.toString(16).padStart(2, '0'))
-			.join('')}`;
-
-		staging.unmap();
-		staging.destroy();
-		return { width: full, height: full, pixels, hex };
-	}
 }
 
-export { DOC_W, DOC_H };
+export { DEFAULT_DOC_W, DEFAULT_DOC_H, MIN_DOC_SIZE, MAX_DOC_SIZE };

@@ -1,5 +1,13 @@
 <script lang="ts">
-	import { createGpuPaint, type BrushKind, type GpuPaint } from '$lib/gpuPaint';
+	import {
+		createGpuPaint,
+		sanitizeDocSize,
+		MIN_DOC_SIZE,
+		MAX_DOC_SIZE,
+		type BrushKind,
+		type GpuPaint
+	} from '$lib/gpuPaint';
+	import { untrack } from 'svelte';
 	import {
 		addStrokeDistance,
 		createPenPressureState,
@@ -12,6 +20,7 @@
 	} from '$lib/penPressure';
 
 	type HistoryApi = { undo: () => void; redo: () => void };
+	type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | 'move';
 
 	let {
 		color = $bindable('#1a6cff'),
@@ -24,8 +33,11 @@
 		canUndo = $bindable(false),
 		canRedo = $bindable(false),
 		historyApi = $bindable(null as null | HistoryApi),
+		docW = $bindable(2000),
+		docH = $bindable(2000),
 		zoom = $bindable(1),
-		eyedropper = $bindable(false)
+		eyedropper = $bindable(false),
+		resizeMode = $bindable(false)
 	}: {
 		color?: string;
 		size?: number;
@@ -37,8 +49,11 @@
 		canUndo?: boolean;
 		canRedo?: boolean;
 		historyApi?: null | HistoryApi;
+		docW?: number;
+		docH?: number;
 		zoom?: number;
 		eyedropper?: boolean;
+		resizeMode?: boolean;
 	} = $props();
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -54,6 +69,240 @@
 	/** Live refs for eyedropper loupe (wired from the GPU effect). */
 	let gpuRef: GpuPaint | null = null;
 	let screenToDocRef: ((sx: number, sy: number) => { x: number; y: number }) | null = null;
+
+	/** Camera mirrors for resize overlay (rotation is forced to 0 in resize mode). */
+	let camX = $state(0);
+	let camY = $state(0);
+	let surfaceW = $state(0);
+	let surfaceH = $state(0);
+
+	/** New canvas frame in current document space. */
+	let cropX = $state(0);
+	let cropY = $state(0);
+	let cropW = $state(2000);
+	let cropH = $state(2000);
+
+	let resizeDrag: {
+		handle: ResizeHandle;
+		startDocX: number;
+		startDocY: number;
+		origX: number;
+		origY: number;
+		origW: number;
+		origH: number;
+	} | null = $state(null);
+
+	let enterResizeImpl: (() => void) | null = null;
+	let applyResizeImpl: (() => void) | null = null;
+	let resizeZoomImpl: ((sx: number, sy: number, factor: number) => void) | null = null;
+	let resizePanImpl: ((dx: number, dy: number) => void) | null = null;
+
+	let resizePanCam: { lastX: number; lastY: number } | null = $state(null);
+
+	const HANDLE_PX = 14;
+
+	const cropScreen = $derived.by(() => {
+		const z = Math.max(zoom, 1e-6);
+		const left = surfaceW * 0.5 + camX + (cropX - docW * 0.5) * z;
+		const top = surfaceH * 0.5 + camY + (cropY - docH * 0.5) * z;
+		return { left, top, width: cropW * z, height: cropH * z };
+	});
+
+	const cropLabel = $derived(`${Math.round(cropW)} × ${Math.round(cropH)}`);
+
+	function screenToDocCam(sx: number, sy: number) {
+		const z = Math.max(zoom, 1e-6);
+		const x = (sx - surfaceW * 0.5 - camX) / z + docW * 0.5;
+		const y = (sy - surfaceH * 0.5 - camY) / z + docH * 0.5;
+		return { x, y };
+	}
+
+	function hitResizeHandle(sx: number, sy: number): ResizeHandle | null {
+		const { left, top, width, height } = cropScreen;
+		const right = left + width;
+		const bottom = top + height;
+		const hs = HANDLE_PX;
+		const near = (a: number, b: number) => Math.abs(a - b) <= hs;
+		const inX = sx >= left - hs && sx <= right + hs;
+		const inY = sy >= top - hs && sy <= bottom + hs;
+		if (!inX || !inY) return null;
+
+		const onL = near(sx, left);
+		const onR = near(sx, right);
+		const onT = near(sy, top);
+		const onB = near(sy, bottom);
+		if (onT && onL) return 'nw';
+		if (onT && onR) return 'ne';
+		if (onB && onL) return 'sw';
+		if (onB && onR) return 'se';
+		if (onT && sx >= left && sx <= right) return 'n';
+		if (onB && sx >= left && sx <= right) return 's';
+		if (onL && sy >= top && sy <= bottom) return 'w';
+		if (onR && sy >= top && sy <= bottom) return 'e';
+		if (sx >= left && sx <= right && sy >= top && sy <= bottom) return 'move';
+		return null;
+	}
+
+	function cursorForHandle(h: ResizeHandle | null) {
+		switch (h) {
+			case 'n':
+			case 's':
+				return 'ns-resize';
+			case 'e':
+			case 'w':
+				return 'ew-resize';
+			case 'ne':
+			case 'sw':
+				return 'nesw-resize';
+			case 'nw':
+			case 'se':
+				return 'nwse-resize';
+			case 'move':
+				return 'move';
+			default:
+				return 'default';
+		}
+	}
+
+	function applyHandleDelta(
+		handle: ResizeHandle,
+		docX: number,
+		docY: number,
+		start: NonNullable<typeof resizeDrag>
+	) {
+		const dx = docX - start.startDocX;
+		const dy = docY - start.startDocY;
+
+		if (handle === 'move') {
+			cropX = Math.round(start.origX + dx);
+			cropY = Math.round(start.origY + dy);
+			return;
+		}
+
+		let left = start.origX;
+		let right = start.origX + start.origW;
+		let top = start.origY;
+		let bottom = start.origY + start.origH;
+
+		if (handle.includes('w')) left = start.origX + dx;
+		if (handle.includes('e')) right = start.origX + start.origW + dx;
+		if (handle.includes('n')) top = start.origY + dy;
+		if (handle.includes('s')) bottom = start.origY + start.origH + dy;
+
+		if (left > right) {
+			const t = left;
+			left = right;
+			right = t;
+		}
+		if (top > bottom) {
+			const t = top;
+			top = bottom;
+			bottom = t;
+		}
+
+		let w = right - left;
+		let h = bottom - top;
+
+		if (w < MIN_DOC_SIZE) {
+			if (handle.includes('w') && !handle.includes('e')) left = right - MIN_DOC_SIZE;
+			else right = left + MIN_DOC_SIZE;
+			w = MIN_DOC_SIZE;
+		} else if (w > MAX_DOC_SIZE) {
+			if (handle.includes('w') && !handle.includes('e')) left = right - MAX_DOC_SIZE;
+			else right = left + MAX_DOC_SIZE;
+			w = MAX_DOC_SIZE;
+		}
+
+		if (h < MIN_DOC_SIZE) {
+			if (handle.includes('n') && !handle.includes('s')) top = bottom - MIN_DOC_SIZE;
+			else bottom = top + MIN_DOC_SIZE;
+			h = MIN_DOC_SIZE;
+		} else if (h > MAX_DOC_SIZE) {
+			if (handle.includes('n') && !handle.includes('s')) top = bottom - MAX_DOC_SIZE;
+			else bottom = top + MAX_DOC_SIZE;
+			h = MAX_DOC_SIZE;
+		}
+
+		cropX = Math.round(left);
+		cropY = Math.round(top);
+		cropW = Math.round(w);
+		cropH = Math.round(h);
+	}
+
+	function onResizePointerDown(e: PointerEvent) {
+		if (e.button !== 0 && e.pointerType === 'mouse') return;
+		e.preventDefault();
+		const el = e.currentTarget as HTMLElement;
+		el.setPointerCapture(e.pointerId);
+
+		if (space || e.button === 1) {
+			resizePanCam = { lastX: e.clientX, lastY: e.clientY };
+			return;
+		}
+
+		const handle = hitResizeHandle(e.clientX, e.clientY);
+		if (!handle) return;
+		const p = screenToDocCam(e.clientX, e.clientY);
+		resizeDrag = {
+			handle,
+			startDocX: p.x,
+			startDocY: p.y,
+			origX: cropX,
+			origY: cropY,
+			origW: cropW,
+			origH: cropH
+		};
+	}
+
+	function onResizePointerMove(e: PointerEvent) {
+		const el = e.currentTarget as HTMLElement;
+		if (resizePanCam && el.hasPointerCapture(e.pointerId)) {
+			resizePanImpl?.(e.clientX - resizePanCam.lastX, e.clientY - resizePanCam.lastY);
+			resizePanCam = { lastX: e.clientX, lastY: e.clientY };
+			return;
+		}
+		if (resizeDrag && el.hasPointerCapture(e.pointerId)) {
+			const p = screenToDocCam(e.clientX, e.clientY);
+			applyHandleDelta(resizeDrag.handle, p.x, p.y, resizeDrag);
+			return;
+		}
+		el.style.cursor = space
+			? 'grab'
+			: cursorForHandle(hitResizeHandle(e.clientX, e.clientY));
+	}
+
+	function onResizePointerUp(e: PointerEvent) {
+		const el = e.currentTarget as HTMLElement;
+		if (el.hasPointerCapture(e.pointerId)) {
+			el.releasePointerCapture(e.pointerId);
+		}
+		resizeDrag = null;
+		resizePanCam = null;
+	}
+
+	function onResizeWheel(e: WheelEvent) {
+		e.preventDefault();
+		let dy = e.deltaY;
+		if (e.deltaMode === 1) dy *= 16;
+		else if (e.deltaMode === 2) dy *= surfaceH || 800;
+		const factor = Math.max(0.01, 1 - dy * 0.001);
+		resizeZoomImpl?.(e.clientX, e.clientY, factor);
+	}
+
+	function cancelResizeMode() {
+		resizeMode = false;
+		resizeDrag = null;
+		resizePanCam = null;
+	}
+
+	function applyResizeMode() {
+		applyResizeImpl?.();
+	}
+
+	$effect(() => {
+		if (!resizeMode) return;
+		enterResizeImpl?.();
+	});
 
 	const LOUPE_RADIUS = 11;
 	const LOUPE_SIZE = 118;
@@ -149,9 +398,18 @@
 	}
 
 	function onKeyDown(e: KeyboardEvent) {
+		if (e.code === 'Escape' && resizeMode) {
+			cancelResizeMode();
+			return;
+		}
 		if (e.code === 'Escape' && eyedropper) {
 			eyedropper = false;
 			loupeActive = false;
+			return;
+		}
+		if (e.code === 'Enter' && resizeMode) {
+			e.preventDefault();
+			applyResizeMode();
 			return;
 		}
 		if (e.code === 'Space') {
@@ -432,21 +690,74 @@
 
 		function syncZoom() {
 			zoom = view.zoom;
+			camX = view.x;
+			camY = view.y;
+			surfaceW = cssW;
+			surfaceH = cssH;
 		}
 
 		function runUndo() {
-			if (!gpu || drawing || strokeActive) return;
+			if (resizeMode || !gpu || drawing || strokeActive) return;
 			gpu.undo();
 			present();
 			syncHistoryFlags();
 		}
 
 		function runRedo() {
-			if (!gpu || drawing || strokeActive) return;
+			if (resizeMode || !gpu || drawing || strokeActive) return;
 			gpu.redo();
 			present();
 			syncHistoryFlags();
 		}
+
+		function beginResizeMode() {
+			if (!gpu) return;
+			if (drawing || strokeActive) {
+				cancelStroke();
+				drawing = false;
+			}
+			eyedropper = false;
+			loupeActive = false;
+			view.rotation = 0;
+			cropX = 0;
+			cropY = 0;
+			cropW = gpu.docW;
+			cropH = gpu.docH;
+			fitDocumentToScreen();
+			present();
+		}
+
+		async function commitResizeMode() {
+			if (!gpu || drawing || strokeActive) return;
+			const nextW = sanitizeDocSize(cropW);
+			const nextH = sanitizeDocSize(cropH);
+			const changed = await gpu.resizeDocument(nextW, nextH, {
+				cropX: Math.round(cropX),
+				cropY: Math.round(cropY)
+			});
+			if (!gpu) return;
+			docW = gpu.docW;
+			docH = gpu.docH;
+			resizeMode = false;
+			resizeDrag = null;
+			if (changed) {
+				fitDocumentToScreen();
+			}
+			present();
+			syncHistoryFlags();
+		}
+
+		enterResizeImpl = beginResizeMode;
+		applyResizeImpl = commitResizeMode;
+		resizeZoomImpl = (sx, sy, factor) => {
+			setViewAroundPivot(sx, sy, view.zoom * factor, 0);
+		};
+		resizePanImpl = (dx, dy) => {
+			view.x += dx;
+			view.y += dy;
+			syncZoom();
+			schedulePresent();
+		};
 
 		function endStroke() {
 			if (!strokeActive || !gpu) return;
@@ -557,6 +868,7 @@
 		}
 
 		function onPointerDown(e: PointerEvent) {
+			if (resizeMode) return;
 			e.preventDefault();
 			const active = document.activeElement;
 			if (active instanceof HTMLElement && active !== surface) active.blur();
@@ -728,7 +1040,8 @@
 
 		(async () => {
 			try {
-				const painter = await createGpuPaint(surface);
+				const initial = untrack(() => ({ width: docW, height: docH }));
+				const painter = await createGpuPaint(surface, initial);
 				if (cancelled) {
 					painter.destroy();
 					return;
@@ -736,7 +1049,9 @@
 				gpu = painter;
 				gpuRef = painter;
 				screenToDocRef = screenToDoc;
-				gpu.setBrush(brush);
+				docW = painter.docW;
+				docH = painter.docH;
+				gpu.setBrush(untrack(() => brush));
 				gpuError = null;
 				undoFn = runUndo;
 				redoFn = runRedo;
@@ -744,6 +1059,7 @@
 				syncHistoryFlags();
 				ro.observe(surface);
 				resize();
+				if (untrack(() => resizeMode)) beginResizeMode();
 			} catch (err) {
 				if (cancelled) return;
 				gpuError = err instanceof Error ? err.message : 'WebGPU failed to initialize';
@@ -757,6 +1073,10 @@
 			undoFn = null;
 			redoFn = null;
 			historyApi = null;
+			enterResizeImpl = null;
+			applyResizeImpl = null;
+			resizeZoomImpl = null;
+			resizePanImpl = null;
 			canUndo = false;
 			canRedo = false;
 			zoom = 1;
@@ -785,6 +1105,91 @@
 	class="fixed inset-0 block h-full w-full touch-none select-none [-webkit-touch-callout:none]"
 	style:background="#1c1c1d"
 ></canvas>
+
+{#if resizeMode}
+	<div
+		class="fixed inset-0 z-40 touch-none"
+		role="presentation"
+		aria-label="Resize canvas"
+		onpointerdown={onResizePointerDown}
+		onpointermove={onResizePointerMove}
+		onpointerup={onResizePointerUp}
+		onpointercancel={onResizePointerUp}
+		onwheel={onResizeWheel}
+	>
+		<!-- Dim outside the crop frame -->
+		<div
+			class="pointer-events-none absolute bg-black/45"
+			style:left="0"
+			style:top="0"
+			style:width="100%"
+			style:height="{Math.max(0, cropScreen.top)}px"
+		></div>
+		<div
+			class="pointer-events-none absolute bg-black/45"
+			style:left="0"
+			style:top="{cropScreen.top + cropScreen.height}px"
+			style:width="100%"
+			style:bottom="0"
+		></div>
+		<div
+			class="pointer-events-none absolute bg-black/45"
+			style:left="0"
+			style:top="{cropScreen.top}px"
+			style:width="{Math.max(0, cropScreen.left)}px"
+			style:height="{cropScreen.height}px"
+		></div>
+		<div
+			class="pointer-events-none absolute bg-black/45"
+			style:left="{cropScreen.left + cropScreen.width}px"
+			style:top="{cropScreen.top}px"
+			style:right="0"
+			style:height="{cropScreen.height}px"
+		></div>
+
+		<!-- Crop frame -->
+		<div
+			class="pointer-events-none absolute border border-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
+			style:left="{cropScreen.left}px"
+			style:top="{cropScreen.top}px"
+			style:width="{cropScreen.width}px"
+			style:height="{cropScreen.height}px"
+		>
+			{#each [['nw', '0', '0'], ['ne', '100%', '0'], ['sw', '0', '100%'], ['se', '100%', '100%'], ['n', '50%', '0'], ['s', '50%', '100%'], ['w', '0', '50%'], ['e', '100%', '50%']] as [name, l, t] (name)}
+				<div
+					class="absolute size-3 rounded-sm border border-black/40 bg-white"
+					style:left={l}
+					style:top={t}
+					style:translate="-50% -50%"
+				></div>
+			{/each}
+		</div>
+
+		<div
+			class="pointer-events-auto absolute bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-xl bg-[#1e1e22]/95 px-3 py-2 shadow-[0_8px_28px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
+			role="toolbar"
+			tabindex="-1"
+			aria-label="Confirm canvas size"
+			onpointerdown={(e) => e.stopPropagation()}
+		>
+			<span class="min-w-[7rem] px-1 text-center text-sm tabular-nums text-white/80">{cropLabel}</span>
+			<button
+				type="button"
+				class="rounded-md bg-[#2a2a2e] px-3 py-1.5 text-sm text-white/75 transition hover:bg-[#34343a] hover:text-white"
+				onclick={cancelResizeMode}
+			>
+				Cancel
+			</button>
+			<button
+				type="button"
+				class="rounded-md bg-[#3a3a42] px-3 py-1.5 text-sm text-white transition hover:bg-[#4a4a52]"
+				onclick={applyResizeMode}
+			>
+				Apply
+			</button>
+		</div>
+	</div>
+{/if}
 
 {#if eyedropper}
 	<div
