@@ -37,7 +37,8 @@
 		docH = $bindable(2000),
 		zoom = $bindable(1),
 		eyedropper = $bindable(false),
-		resizeMode = $bindable(false)
+		resizeMode = $bindable(false),
+		mirrorView = $bindable(false)
 	}: {
 		color?: string;
 		size?: number;
@@ -54,6 +55,8 @@
 		zoom?: number;
 		eyedropper?: boolean;
 		resizeMode?: boolean;
+		/** Temporary view flip across vertical axis (does not alter pixels). */
+		mirrorView?: boolean;
 	} = $props();
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -96,6 +99,7 @@
 	let applyResizeImpl: (() => void) | null = null;
 	let resizeZoomImpl: ((sx: number, sy: number, factor: number) => void) | null = null;
 	let resizePanImpl: ((dx: number, dy: number) => void) | null = null;
+	let presentImpl: (() => void) | null = null;
 
 	let resizePanCam: { lastX: number; lastY: number } | null = $state(null);
 
@@ -304,6 +308,11 @@
 		enterResizeImpl?.();
 	});
 
+	$effect(() => {
+		void mirrorView;
+		presentImpl?.();
+	});
+
 	const LOUPE_RADIUS = 11;
 	const LOUPE_SIZE = 118;
 	const LOUPE_OFFSET_Y = 72;
@@ -418,6 +427,11 @@
 		}
 		if (e.code === 'AltLeft' || e.code === 'AltRight') alt = true;
 		if (e.code === 'KeyR') rotateKey = true;
+		if (e.code === 'KeyM' && !e.metaKey && !e.ctrlKey && !e.altKey && !isEditableTarget(e.target)) {
+			e.preventDefault();
+			if (!resizeMode) mirrorView = !mirrorView;
+			return;
+		}
 
 		const mod = e.metaKey || e.ctrlKey;
 		if (!mod || isEditableTarget(e.target)) return;
@@ -446,10 +460,11 @@
 		let cancelled = false;
 		let gpu: GpuPaint | null = null;
 
-		const view = { x: 0, y: 0, zoom: 1, rotation: 0 };
+		const view = { x: 0, y: 0, zoom: 1, rotation: 0, flipX: 1 };
 		let cssW = 0;
 		let cssH = 0;
 		let fittedOnce = false;
+		let mirrorApplied = untrack(() => mirrorView);
 
 		let drawing = false;
 		let strokeActive = false;
@@ -576,13 +591,18 @@
 			else if (tap.maxFingers === 3) runRedo();
 		}
 
+		function viewFlipX() {
+			return mirrorView ? -1 : 1;
+		}
+
 		function screenToDoc(sx: number, sy: number) {
 			if (!gpu) return { x: 0, y: 0 };
 			const DOC_W = gpu.docW;
 			const DOC_H = gpu.docH;
 			const cx = cssW / 2;
 			const cy = cssH / 2;
-			let x = sx - cx - view.x;
+			const flip = viewFlipX();
+			let x = (sx - cx - view.x) * flip;
 			let y = sy - cy - view.y;
 			const cos = Math.cos(-view.rotation);
 			const sin = Math.sin(-view.rotation);
@@ -595,6 +615,7 @@
 		}
 
 		function present() {
+			view.flipX = viewFlipX();
 			gpu?.present(view, cssW, cssH, opacity, strokeActive);
 		}
 
@@ -618,11 +639,12 @@
 			view.zoom = Math.min(MAX_Z, Math.max(MIN_Z, newZoom));
 			view.rotation = newRotation;
 
+			const flip = viewFlipX();
 			const cos = Math.cos(view.rotation);
 			const sin = Math.sin(view.rotation);
 			const dx = (before.x - gpu.docW / 2) * view.zoom;
 			const dy = (before.y - gpu.docH / 2) * view.zoom;
-			const rx = dx * cos - dy * sin;
+			const rx = (dx * cos - dy * sin) * flip;
 			const ry = dx * sin + dy * cos;
 			view.x = pivotX - cssW / 2 - rx;
 			view.y = pivotY - cssH / 2 - ry;
@@ -631,11 +653,12 @@
 
 		function placeDocAtScreen(docPoint: { x: number; y: number }, screenX: number, screenY: number) {
 			if (!gpu) return;
+			const flip = viewFlipX();
 			const cos = Math.cos(view.rotation);
 			const sin = Math.sin(view.rotation);
 			const dx = (docPoint.x - gpu.docW / 2) * view.zoom;
 			const dy = (docPoint.y - gpu.docH / 2) * view.zoom;
-			const rx = dx * cos - dy * sin;
+			const rx = (dx * cos - dy * sin) * flip;
 			const ry = dx * sin + dy * cos;
 			view.x = screenX - cssW / 2 - rx;
 			view.y = screenY - cssH / 2 - ry;
@@ -718,7 +741,9 @@
 			}
 			eyedropper = false;
 			loupeActive = false;
+			mirrorView = false;
 			view.rotation = 0;
+			view.flipX = 1;
 			cropX = 0;
 			cropY = 0;
 			cropW = gpu.docW;
@@ -749,6 +774,16 @@
 
 		enterResizeImpl = beginResizeMode;
 		applyResizeImpl = commitResizeMode;
+		presentImpl = () => {
+			const next = mirrorView;
+			if (next !== mirrorApplied) {
+				// Keep the viewport center fixed when toggling.
+				view.x = -view.x;
+				mirrorApplied = next;
+				syncZoom();
+			}
+			schedulePresent();
+		};
 		resizeZoomImpl = (sx, sy, factor) => {
 			setViewAroundPivot(sx, sy, view.zoom * factor, 0);
 		};
@@ -946,7 +981,9 @@
 						MAX_Z,
 						Math.max(MIN_Z, pinch.startZoom * (dist / Math.max(pinch.startDist, 1e-6)))
 					);
-					view.rotation = pinch.startRotation + (angle - pinch.startAngle);
+					// Negate twist while mirrored so screen-space rotation feels natural.
+					view.rotation =
+						pinch.startRotation + (angle - pinch.startAngle) * viewFlipX();
 					placeDocAtScreen(pinch.docPoint, midX, midY);
 					schedulePresent();
 					return;
@@ -965,7 +1002,13 @@
 						if (dAng > Math.PI) dAng -= Math.PI * 2;
 						if (dAng < -Math.PI) dAng += Math.PI * 2;
 						lastRotateAngle = ang;
-						setViewAroundPivot(rotatePivot.x, rotatePivot.y, view.zoom, view.rotation + dAng);
+						// Negate while mirrored so screen-space rotation feels natural.
+						setViewAroundPivot(
+							rotatePivot.x,
+							rotatePivot.y,
+							view.zoom,
+							view.rotation + dAng * viewFlipX()
+						);
 					}
 				}
 				return;
@@ -1075,6 +1118,7 @@
 			historyApi = null;
 			enterResizeImpl = null;
 			applyResizeImpl = null;
+			presentImpl = null;
 			resizeZoomImpl = null;
 			resizePanImpl = null;
 			canUndo = false;

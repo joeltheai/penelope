@@ -64,6 +64,8 @@ const PresentUniforms = d.struct({
 	pan: d.vec2f,
 	zoom: d.f32,
 	rotate: d.f32,
+	/** View-only mirror: 1 = normal, -1 = flip across vertical axis. */
+	flipX: d.f32,
 	strokeOpacity: d.f32,
 	strokeActive: d.f32,
 	docSize: d.vec2f
@@ -83,6 +85,8 @@ export type ViewState = {
 	y: number;
 	zoom: number;
 	rotation: number;
+	/** View-only mirror: 1 = normal, -1 = flip across vertical axis. */
+	flipX: number;
 };
 
 /** Stamp brushes (pen / airbrush) vs path-fill tool (lasso). */
@@ -323,6 +327,7 @@ export async function createGpuPaint(
 		pan: [0, 0],
 		zoom: 1,
 		rotate: 0,
+		flipX: 1,
 		strokeOpacity: 1,
 		strokeActive: 0,
 		docSize: [docW, docH]
@@ -497,8 +502,8 @@ export async function createGpuPaint(
 			'use gpu';
 			const u = presentUniforms.$;
 			const screen = input.uv * u.viewport;
-			// Match PaintCanvas.screenToDoc: pan → unrotate → unzoom
-			const x = screen.x - u.center.x - u.pan.x;
+			// Match PaintCanvas.screenToDoc: pan → unflip → unrotate → unzoom
+			const x = (screen.x - u.center.x - u.pan.x) * u.flipX;
 			const y = screen.y - u.center.y - u.pan.y;
 			const c = std.cos(-u.rotate);
 			const s = std.sin(-u.rotate);
@@ -1198,6 +1203,7 @@ export async function createGpuPaint(
 				pan: [view.x, view.y],
 				zoom: view.zoom,
 				rotate: view.rotation,
+				flipX: view.flipX < 0 ? -1 : 1,
 				strokeOpacity: opacity,
 				strokeActive: strokeActive ? 1 : 0,
 				docSize: [docW, docH]

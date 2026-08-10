@@ -32,6 +32,7 @@
 	let spacingOpen = $state(false);
 	let eyedropper = $state(false);
 	let resizeMode = $state(false);
+	let mirrorView = $state(false);
 
 	const PANEL_KEY = 'penelope.sliderPanel';
 	let panelX = $state(12);
@@ -162,6 +163,7 @@
 	bind:zoom
 	bind:eyedropper
 	bind:resizeMode
+	bind:mirrorView
 />
 
 {#if !resizeMode}
@@ -431,6 +433,30 @@
 				>
 					<path d="M21 7v6h-6" />
 					<path d="M21 13a9 9 0 1 1-3-7.7L21 7" />
+				</svg>
+			</button>
+			<button
+				type="button"
+				class={mirrorView ? toolBtnOn : toolBtn}
+				aria-label="Mirror view"
+				aria-pressed={mirrorView}
+				title="Mirror view (M)"
+				onclick={() => (mirrorView = !mirrorView)}
+			>
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					class="size-4"
+					aria-hidden="true"
+				>
+					<path d="M12 3v18" />
+					<path d="M4 7l5 5-5 5" />
+					<path d="M20 7l-5 5 5 5" />
 				</svg>
 			</button>
 			<button
