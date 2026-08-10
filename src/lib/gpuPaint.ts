@@ -49,19 +49,16 @@ const CompositeUniforms = d.struct({
 	opacity: d.f32
 });
 
+/** Camera + present (inverse screen→doc map). */
 const PresentUniforms = d.struct({
-	m0: d.vec3f,
-	m1: d.vec3f,
-	m2: d.vec3f,
+	viewport: d.vec2f,
+	center: d.vec2f,
+	pan: d.vec2f,
+	zoom: d.f32,
+	rotate: d.f32,
 	strokeOpacity: d.f32,
 	strokeActive: d.f32,
 	docSize: d.vec2f
-});
-
-// Screen-fixed backdrop grid (does not pan/zoom/rotate with the document)
-const GridUniforms = d.struct({
-	cssSize: d.vec2f,
-	spacing: d.f32
 });
 
 const GRID_BG = [0.11, 0.11, 0.114] as const;
@@ -70,6 +67,8 @@ const GRID_MAJOR = [0.24, 0.24, 0.25] as const;
 // CSS pixels between minor lines — smaller = denser
 const GRID_SPACING = 16;
 const GRID_MAJOR_EVERY = 4;
+/** Cap backing-store DPR to keep present fillrate cheap. */
+const MAX_PRESENT_DPR = 2;
 
 export type ViewState = {
 	x: number;
@@ -277,16 +276,14 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 	});
 	const compositeUniforms = root.createUniform(CompositeUniforms, { opacity: 1 });
 	const presentUniforms = root.createUniform(PresentUniforms, {
-		m0: [1, 0, 0],
-		m1: [0, 1, 0],
-		m2: [0, 0, 1],
+		viewport: [1, 1],
+		center: [0.5, 0.5],
+		pan: [0, 0],
+		zoom: 1,
+		rotate: 0,
 		strokeOpacity: 1,
 		strokeActive: 0,
 		docSize: [DOC_W, DOC_H]
-	});
-	const gridUniforms = root.createUniform(GridUniforms, {
-		cssSize: [1, 1],
-		spacing: GRID_SPACING
 	});
 
 	const stampLayout = tgpu.vertexLayout(d.disarrayOf(StampVertex));
@@ -408,55 +405,46 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		return d.vec4f(s.rgb * opacity, s.a * opacity);
 	});
 
-	const presentVertex = tgpu.vertexFn({
-		in: { vertexIndex: d.builtin.vertexIndex },
-		out: { position: d.builtin.position, uv: d.vec2f }
-	})((input) => {
-		'use gpu';
-		const vi = input.vertexIndex;
-		const x = std.select(0, 1, vi === 1 || vi === 2 || vi === 4);
-		const y = std.select(0, 1, vi === 2 || vi === 4 || vi === 5);
-		const u = presentUniforms.$;
-		const doc = d.vec3f(x * u.docSize.x, y * u.docSize.y, 1);
-		return {
-			position: d.vec4f(std.dot(u.m0, doc), std.dot(u.m1, doc), 0, 1),
-			uv: d.vec2f(x, y)
-		};
-	});
-
 	const presentFragment = tgpu.fragmentFn({
 		in: { uv: d.vec2f },
 		out: d.vec4f
 	})((input) => {
 		'use gpu';
 		const u = presentUniforms.$;
-		const docSample = std.textureSample(docView.$, linearSamp.$, input.uv);
-		const strokeSample = std.textureSample(strokeView.$, linearSamp.$, input.uv);
-		const factor = u.strokeOpacity * u.strokeActive;
-		const a = strokeSample.a * factor;
-		const rgb = strokeSample.rgb * factor + docSample.rgb * (1 - a);
-		return d.vec4f(rgb, 1);
-	});
+		const screen = input.uv * u.viewport;
+		// Match PaintCanvas.screenToDoc: pan → unrotate → unzoom
+		const x = screen.x - u.center.x - u.pan.x;
+		const y = screen.y - u.center.y - u.pan.y;
+		const c = std.cos(-u.rotate);
+		const s = std.sin(-u.rotate);
+		const ux = x * c - y * s;
+		const uy = x * s + y * c;
+		const docX = ux / u.zoom + u.docSize.x * 0.5;
+		const docY = uy / u.zoom + u.docSize.y * 0.5;
+		const docUv = d.vec2f(docX / u.docSize.x, docY / u.docSize.y);
+		const inDoc =
+			docUv.x >= 0 && docUv.x <= 1 && docUv.y >= 0 && docUv.y <= 1;
 
-	const gridFragment = tgpu.fragmentFn({
-		in: { uv: d.vec2f },
-		out: d.vec4f
-	})((input) => {
-		'use gpu';
-		const u = gridUniforms.$;
-		const sx = input.uv.x * u.cssSize.x;
-		const sy = input.uv.y * u.cssSize.y;
+		if (inDoc) {
+			const docSample = std.textureSample(docView.$, linearSamp.$, docUv);
+			const strokeSample = std.textureSample(strokeView.$, linearSamp.$, docUv);
+			const factor = u.strokeOpacity * u.strokeActive;
+			const a = strokeSample.a * factor;
+			const rgb = strokeSample.rgb * factor + docSample.rgb * (1 - a);
+			return d.vec4f(rgb, 1);
+		}
 
-		const spacing = u.spacing;
+		// Screen-fixed backdrop grid (outside the document only)
+		const spacing = GRID_SPACING;
 		const majorSpacing = spacing * GRID_MAJOR_EVERY;
-		const fx = std.fract(sx / spacing);
-		const fy = std.fract(sy / spacing);
+		const fx = std.fract(screen.x / spacing);
+		const fy = std.fract(screen.y / spacing);
 		const dx = std.min(fx, 1 - fx) * spacing;
 		const dy = std.min(fy, 1 - fy) * spacing;
 		const dist = std.min(dx, dy);
 
-		const mfx = std.fract(sx / majorSpacing);
-		const mfy = std.fract(sy / majorSpacing);
+		const mfx = std.fract(screen.x / majorSpacing);
+		const mfy = std.fract(screen.y / majorSpacing);
 		const mdx = std.min(mfx, 1 - mfx) * majorSpacing;
 		const mdy = std.min(mfy, 1 - mfy) * majorSpacing;
 		const majorDist = std.min(mdx, mdy);
@@ -520,15 +508,8 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		primitive: { topology: 'triangle-list' }
 	});
 
-	const gridPipeline = root.createRenderPipeline({
-		vertex: common.fullScreenTriangle,
-		fragment: gridFragment,
-		targets: { format },
-		primitive: { topology: 'triangle-list' }
-	});
-
 	const presentPipeline = root.createRenderPipeline({
-		vertex: presentVertex,
+		vertex: common.fullScreenTriangle,
 		fragment: presentFragment,
 		targets: { format },
 		primitive: { topology: 'triangle-list' }
@@ -802,7 +783,7 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 
 		resize(cssW: number, cssH: number) {
 			if (destroyed) return;
-			const dpr = devicePixelRatio || 1;
+			const dpr = Math.min(devicePixelRatio || 1, MAX_PRESENT_DPR);
 			canvas.width = Math.max(1, Math.round(cssW * dpr));
 			canvas.height = Math.max(1, Math.round(cssH * dpr));
 			root.configureContext({ canvas, format, alphaMode: 'opaque' });
@@ -991,46 +972,20 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		present(view: ViewState, cssW: number, cssH: number, opacity: number, strokeActive: boolean) {
 			if (destroyed || cssW < 1 || cssH < 1) return;
 
-			const cos = Math.cos(view.rotation);
-			const sin = Math.sin(view.rotation);
-			const zx = view.zoom;
-			const zy = view.zoom;
-			// doc px -> screen css px
-			// p' = R * S * (p - center) + screenCenter + pan
-			const cx = DOC_W / 2;
-			const cy = DOC_H / 2;
-			const a = cos * zx;
-			const b = -sin * zy;
-			const c = sin * zx;
-			const dMat = cos * zy;
-			const tx = -a * cx - b * cy + cssW / 2 + view.x;
-			const ty = -c * cx - dMat * cy + cssH / 2 + view.y;
-			// screen css -> clip: x_c = sx/cssW*2-1, y_c = 1-sy/cssH*2
-			const sx = 2 / cssW;
-			const sy = -2 / cssH;
-			// clip = T_clip * T_screen
-			const m00 = sx * a;
-			const m01 = sx * b;
-			const m02 = sx * tx - 1;
-			const m10 = sy * c;
-			const m11 = sy * dMat;
-			const m12 = sy * ty + 1;
-
+			// One submit: fullscreen inverse-map present.
+			// TypeGPU's bare `.draw()` submits the queue each call — avoid dual passes.
 			presentUniforms.write({
-				m0: [m00, m01, m02],
-				m1: [m10, m11, m12],
-				m2: [0, 0, 1],
+				viewport: [cssW, cssH],
+				center: [cssW * 0.5, cssH * 0.5],
+				pan: [view.x, view.y],
+				zoom: view.zoom,
+				rotate: view.rotation,
 				strokeOpacity: opacity,
 				strokeActive: strokeActive ? 1 : 0,
 				docSize: [DOC_W, DOC_H]
 			});
 
-			gridUniforms.write({
-				cssSize: [cssW, cssH],
-				spacing: GRID_SPACING
-			});
-
-			gridPipeline
+			presentPipeline
 				.withColorAttachment({
 					view: context,
 					clearValue: [GRID_BG[0], GRID_BG[1], GRID_BG[2], 1],
@@ -1038,14 +993,6 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 					storeOp: 'store'
 				})
 				.draw(3);
-
-			presentPipeline
-				.withColorAttachment({
-					view: context,
-					loadOp: 'load',
-					storeOp: 'store'
-				})
-				.draw(6);
 		},
 
 		destroy() {

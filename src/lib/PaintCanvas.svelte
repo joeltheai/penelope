@@ -243,6 +243,17 @@
 			gpu?.present(view, cssW, cssH, opacity, strokeActive);
 		}
 
+		let presentRaf = 0;
+
+		function schedulePresent() {
+			if (presentRaf) return;
+			presentRaf = requestAnimationFrame(() => {
+				presentRaf = 0;
+				syncZoom();
+				present();
+			});
+		}
+
 		/** Keep the doc point under `pivot` fixed when zoom/rotation change. */
 		function setViewAroundPivot(pivotX: number, pivotY: number, newZoom: number, newRotation: number) {
 			const MIN_Z = 0.05;
@@ -251,7 +262,6 @@
 			const before = screenToDoc(pivotX, pivotY);
 			view.zoom = Math.min(MAX_Z, Math.max(MIN_Z, newZoom));
 			view.rotation = newRotation;
-			syncZoom();
 
 			const cos = Math.cos(view.rotation);
 			const sin = Math.sin(view.rotation);
@@ -261,7 +271,7 @@
 			const ry = dx * sin + dy * cos;
 			view.x = pivotX - cssW / 2 - rx;
 			view.y = pivotY - cssH / 2 - ry;
-			present();
+			schedulePresent();
 		}
 
 		function placeDocAtScreen(docPoint: { x: number; y: number }, screenX: number, screenY: number) {
@@ -527,10 +537,9 @@
 						MAX_Z,
 						Math.max(MIN_Z, pinch.startZoom * (dist / Math.max(pinch.startDist, 1e-6)))
 					);
-					syncZoom();
 					view.rotation = pinch.startRotation + (angle - pinch.startAngle);
 					placeDocAtScreen(pinch.docPoint, midX, midY);
-					present();
+					schedulePresent();
 					return;
 				}
 				if (touchCount() >= 2) return;
@@ -558,7 +567,7 @@
 				view.y += e.clientY - lastY;
 				lastX = e.clientX;
 				lastY = e.clientY;
-				present();
+				schedulePresent();
 				return;
 			}
 
@@ -588,7 +597,11 @@
 
 		function onWheel(e: WheelEvent) {
 			e.preventDefault();
-			const factor = e.deltaY < 0 ? 1.1 : 0.9;
+			// Continuous zoom from trackpad/mouse delta (not stepped 1.1/0.9).
+			let dy = e.deltaY;
+			if (e.deltaMode === 1) dy *= 16;
+			else if (e.deltaMode === 2) dy *= cssH || 800;
+			const factor = Math.max(0.01, 1 - dy * 0.001);
 			setViewAroundPivot(e.clientX, e.clientY, view.zoom * factor, view.rotation);
 		}
 
@@ -641,6 +654,7 @@
 		return () => {
 			cancelled = true;
 			stopAirbrushTimer();
+			if (presentRaf) cancelAnimationFrame(presentRaf);
 			undoFn = null;
 			redoFn = null;
 			historyApi = null;
