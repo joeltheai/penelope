@@ -8,13 +8,25 @@ declare global {
 			env: Env;
 			ctx: ExecutionContext;
 			caches: CacheStorage;
-			cf?: IncomingRequestCfProperties
+			cf?: IncomingRequestCfProperties;
 		}
 
 		// interface Error {}
 		// interface Locals {}
 		// interface PageData {}
 		// interface PageState {}
+	}
+
+	interface EyeDropper {
+		open(options?: { signal?: AbortSignal }): Promise<{ sRGBHex: string }>;
+	}
+
+	interface EyeDropperConstructor {
+		new (): EyeDropper;
+	}
+
+	interface Window {
+		EyeDropper?: EyeDropperConstructor;
 	}
 }
 

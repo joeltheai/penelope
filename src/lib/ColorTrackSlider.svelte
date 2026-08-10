@@ -95,41 +95,34 @@
 	}
 </script>
 
-<div class="flex flex-col gap-1.5">
-	<div class="flex items-baseline justify-between px-0.5">
-		<span class="text-[11px] font-medium tracking-wide text-white/55 uppercase">{label}</span>
-		<span class="tabular-nums text-[11px] text-white/45">{Math.round(value)}</span>
-	</div>
-
+<div
+	bind:this={trackEl}
+	role="slider"
+	tabindex="0"
+	aria-label={label}
+	aria-valuemin={min}
+	aria-valuemax={max}
+	aria-valuenow={value}
+	class="track outline-none focus-visible:ring-2 focus-visible:ring-white/35"
+	style:background={gradient}
+	onpointerdown={onPointerDown}
+	onpointermove={onPointerMove}
+	onpointerup={onPointerUp}
+	onpointercancel={onPointerUp}
+	onkeydown={onKeyDown}
+>
 	<div
-		bind:this={trackEl}
-		role="slider"
-		tabindex="0"
-		aria-label={label}
-		aria-valuemin={min}
-		aria-valuemax={max}
-		aria-valuenow={value}
-		class="track outline-none focus-visible:ring-2 focus-visible:ring-white/35"
-		style:background={gradient}
-		onpointerdown={onPointerDown}
-		onpointermove={onPointerMove}
-		onpointerup={onPointerUp}
-		onpointercancel={onPointerUp}
-		onkeydown={onKeyDown}
-	>
-		<div
-			class="thumb"
-			style:left="{percent}%"
-			style:background={thumbColor ?? '#fff'}
-			aria-hidden="true"
-		></div>
-	</div>
+		class="thumb"
+		style:left="{percent}%"
+		style:background={thumbColor ?? '#fff'}
+		aria-hidden="true"
+	></div>
 </div>
 
 <style>
 	.track {
 		position: relative;
-		height: 2.25rem;
+		height: 1.35rem;
 		border-radius: 9999px;
 		cursor: grab;
 		touch-action: none;
@@ -146,11 +139,11 @@
 	.thumb {
 		position: absolute;
 		top: 50%;
-		width: 1.65rem;
-		height: 1.65rem;
+		width: 1.2rem;
+		height: 1.2rem;
 		translate: -50% -50%;
 		border-radius: 9999px;
-		border: 3px solid #fff;
+		border: 2.5px solid #fff;
 		box-shadow:
 			0 1px 3px rgba(0, 0, 0, 0.45),
 			0 0 0 1px rgba(0, 0, 0, 0.12);

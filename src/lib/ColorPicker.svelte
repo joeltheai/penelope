@@ -26,7 +26,6 @@
 	} = $props();
 
 	let mode = $state<Mode>('rgb');
-	let hexDraft = $state('1A6CFF');
 
 	let rgb = $state<RGB>({ r: 26, g: 108, b: 255 });
 	let hsv = $state<HSV>({ h: 217, s: 0.9, v: 1 });
@@ -39,9 +38,7 @@
 		};
 		rgb = rounded;
 		hsv = rgbToHsv(rounded);
-		const hex = rgbToHex(rounded);
-		color = hex;
-		hexDraft = hex.slice(1).toUpperCase();
+		color = rgbToHex(rounded);
 	}
 
 	function commitHsv(next: HSV) {
@@ -53,9 +50,7 @@
 		};
 		// Keep the HSV the user chose so hue survives zero saturation/value.
 		hsv = next;
-		const hex = rgbToHex(rgb);
-		color = hex;
-		hexDraft = hex.slice(1).toUpperCase();
+		color = rgbToHex(rgb);
 	}
 
 	function commitHex(hex: string) {
@@ -72,7 +67,6 @@
 		if (parsed.r === rgb.r && parsed.g === rgb.g && parsed.b === rgb.b) return;
 		rgb = parsed;
 		hsv = rgbToHsv(parsed);
-		hexDraft = rgbToHex(parsed).slice(1).toUpperCase();
 	});
 
 	let thumb = $derived(rgbToHex(rgb));
@@ -96,39 +90,38 @@
 		open = true;
 	}
 
-	function toggleEyedropper() {
-		picking = !picking;
-	}
-
-	function onHexInput(e: Event) {
-		const raw = (e.currentTarget as HTMLInputElement).value
-			.replace(/[^0-9a-fA-F]/g, '')
-			.slice(0, 6);
-		hexDraft = raw.toUpperCase();
-		if (raw.length === 6) commitHex(`#${raw}`);
-	}
-
-	function onHexBlur() {
-		if (hexDraft.length === 3 || hexDraft.length === 6) {
-			if (!commitHex(`#${hexDraft}`)) {
-				hexDraft = color.replace(/^#/, '').toUpperCase();
-			}
-		} else {
-			hexDraft = color.replace(/^#/, '').toUpperCase();
+	async function toggleEyedropper() {
+		if (picking) {
+			picking = false;
+			return;
 		}
+
+		// Chromium EyeDropper: system loupe, pick from anywhere on screen.
+		if (typeof window.EyeDropper === 'function') {
+			try {
+				const result = await new window.EyeDropper().open();
+				commitHex(result.sRGBHex);
+			} catch {
+				/* user cancelled */
+			}
+			return;
+		}
+
+		// Safari / iPad: custom canvas loupe (PaintCanvas).
+		picking = true;
 	}
 </script>
 
 <div data-color-picker>
 	{#if open}
 		<div
-			class="w-[17.5rem] rounded-xl bg-[#1e1e22] p-3 shadow-[0_12px_40px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06)]"
+			class="w-[16rem] rounded-xl bg-[#1e1e22] p-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06)]"
 			role="group"
 			aria-label="Color picker"
 		>
-			<div class="mb-3 flex items-center gap-2">
+			<div class="mb-2 flex items-center gap-1.5">
 				<div
-					class="size-8 shrink-0 rounded-full border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]"
+					class="size-7 shrink-0 rounded-full border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]"
 					style:background={color}
 					aria-hidden="true"
 				></div>
@@ -142,7 +135,7 @@
 						type="button"
 						role="tab"
 						aria-selected={mode === 'rgb'}
-						class="flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition
+						class="flex-1 rounded-md px-2 py-1 text-xs font-medium transition
 							{mode === 'rgb'
 							? 'bg-[#3a3a42] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
 							: 'text-white/50 hover:text-white/75'}"
@@ -154,7 +147,7 @@
 						type="button"
 						role="tab"
 						aria-selected={mode === 'hsv'}
-						class="flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition
+						class="flex-1 rounded-md px-2 py-1 text-xs font-medium transition
 							{mode === 'hsv'
 							? 'bg-[#3a3a42] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
 							: 'text-white/50 hover:text-white/75'}"
@@ -166,13 +159,13 @@
 
 				<button
 					type="button"
-					class="flex size-8 shrink-0 items-center justify-center rounded-md transition
+					class="flex size-7 shrink-0 items-center justify-center rounded-md transition
 						{picking
 						? 'bg-[#3a3a42] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
 						: 'text-white/45 hover:bg-white/5 hover:text-white/80'}"
 					aria-label="Eyedropper"
 					aria-pressed={picking}
-					title={picking ? 'Tap canvas to sample · Esc to cancel' : 'Eyedropper'}
+					title={picking ? 'Drag to sample · Esc to cancel' : 'Eyedropper'}
 					onclick={toggleEyedropper}
 				>
 					<svg
@@ -183,21 +176,19 @@
 						stroke-width="2"
 						stroke-linecap="round"
 						stroke-linejoin="round"
-						class="size-4"
+						class="size-3.5"
 						aria-hidden="true"
 					>
 						<path d="m2 22 1-1h3l9-9" />
 						<path d="M3 21v-3l9-9" />
 						<path d="m15 5 3 3" />
-						<path
-							d="M14.5 4.5c1.5-1.5 4-1.5 5.5 0s1.5 4 0 5.5L16 14l-3-3z"
-						/>
+						<path d="M14.5 4.5c1.5-1.5 4-1.5 5.5 0s1.5 4 0 5.5L16 14l-3-3z" />
 					</svg>
 				</button>
 
 				<button
 					type="button"
-					class="flex size-8 shrink-0 items-center justify-center rounded-md text-white/45 transition hover:bg-white/5 hover:text-white/80"
+					class="flex size-7 shrink-0 items-center justify-center rounded-md text-white/45 transition hover:bg-white/5 hover:text-white/80"
 					aria-label="Minimize color picker"
 					title="Minimize"
 					onclick={minimize}
@@ -210,7 +201,7 @@
 						stroke-width="2"
 						stroke-linecap="round"
 						stroke-linejoin="round"
-						class="size-4"
+						class="size-3.5"
 						aria-hidden="true"
 					>
 						<path d="M5 12h14" />
@@ -219,7 +210,7 @@
 			</div>
 
 			{#if mode === 'rgb'}
-				<div class="flex flex-col gap-3">
+				<div class="flex flex-col gap-1.5">
 					<ColorTrackSlider
 						label="Red"
 						min={0}
@@ -252,7 +243,7 @@
 					/>
 				</div>
 			{:else}
-				<div class="flex flex-col gap-3">
+				<div class="flex flex-col gap-1.5">
 					<ColorTrackSlider
 						label="Hue"
 						min={0}
@@ -285,23 +276,6 @@
 					/>
 				</div>
 			{/if}
-
-			<label
-				class="mt-3 flex items-center gap-2 rounded-lg bg-[#141416] px-2.5 py-2 text-xs text-white/55"
-			>
-				<span class="font-medium">#</span>
-				<input
-					type="text"
-					class="min-w-0 flex-1 bg-transparent font-mono text-sm tracking-wider text-white uppercase outline-none placeholder:text-white/25"
-					spellcheck="false"
-					autocomplete="off"
-					maxlength="6"
-					aria-label="Hex color"
-					value={hexDraft}
-					oninput={onHexInput}
-					onblur={onHexBlur}
-				/>
-			</label>
 		</div>
 	{:else}
 		<button

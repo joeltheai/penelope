@@ -105,6 +105,20 @@ export type GpuPaint = {
 	flushStamps: (color: string) => void;
 	/** Sample document color at doc-space pixel; returns `#rrggbb` or null if out of bounds. */
 	sampleColor: (x: number, y: number) => Promise<string | null>;
+	/**
+	 * Read a square patch around a doc-space point for the eyedropper loupe.
+	 * `radius` is half-extent in pixels (patch is `2*radius+1` wide).
+	 */
+	samplePatch: (
+		x: number,
+		y: number,
+		radius: number
+	) => Promise<{
+		width: number;
+		height: number;
+		pixels: Uint8ClampedArray;
+		hex: string;
+	} | null>;
 	present: (view: ViewState, cssW: number, cssH: number, opacity: number, strokeActive: boolean) => void;
 	destroy: () => void;
 };
@@ -972,34 +986,11 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 		},
 
 		async sampleColor(x: number, y: number) {
-			if (destroyed) return null;
-			const px = Math.floor(x);
-			const py = Math.floor(y);
-			if (px < 0 || py < 0 || px >= DOC_W || py >= DOC_H) return null;
-
-			// WebGPU requires bytesPerRow ≥ 256 for buffer copies.
-			const bytesPerRow = 256;
-			const device = root.device;
-			const staging = device.createBuffer({
-				size: bytesPerRow,
-				usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-			});
-			const encoder = device.createCommandEncoder();
-			encoder.copyTextureToBuffer(
-				{ texture: root.unwrap(docTex), origin: [px, py, 0] },
-				{ buffer: staging, bytesPerRow },
-				[1, 1, 1]
-			);
-			device.queue.submit([encoder.finish()]);
-			await staging.mapAsync(GPUMapMode.READ);
-			const bytes = new Uint8Array(staging.getMappedRange(0, 4));
-			const hex = `#${[bytes[0], bytes[1], bytes[2]]
-				.map((n) => n.toString(16).padStart(2, '0'))
-				.join('')}`;
-			staging.unmap();
-			staging.destroy();
-			return hex;
+			const patch = await samplePatchAt(x, y, 0);
+			return patch?.hex ?? null;
 		},
+
+		samplePatch: samplePatchAt,
 
 		present(view: ViewState, cssW: number, cssH: number, opacity: number, strokeActive: boolean) {
 			if (destroyed || cssW < 1 || cssH < 1) return;
@@ -1036,6 +1027,61 @@ export async function createGpuPaint(canvas: HTMLCanvasElement): Promise<GpuPain
 			root.destroy();
 		}
 	};
+
+	async function samplePatchAt(x: number, y: number, radius: number) {
+		if (destroyed) return null;
+		const cx = Math.floor(x);
+		const cy = Math.floor(y);
+		if (cx < 0 || cy < 0 || cx >= DOC_W || cy >= DOC_H) return null;
+
+		const r = Math.max(0, Math.floor(radius));
+		const full = r * 2 + 1;
+		const x0 = Math.max(0, cx - r);
+		const y0 = Math.max(0, cy - r);
+		const x1 = Math.min(DOC_W, cx + r + 1);
+		const y1 = Math.min(DOC_H, cy + r + 1);
+		const srcW = x1 - x0;
+		const srcH = y1 - y0;
+		if (srcW < 1 || srcH < 1) return null;
+
+		const bytesPerPixel = 4;
+		const unpadded = srcW * bytesPerPixel;
+		const bytesPerRow = Math.max(256, Math.ceil(unpadded / 256) * 256);
+		const device = root.device;
+		const staging = device.createBuffer({
+			size: bytesPerRow * srcH,
+			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+		});
+		const encoder = device.createCommandEncoder();
+		encoder.copyTextureToBuffer(
+			{ texture: root.unwrap(docTex), origin: [x0, y0, 0] },
+			{ buffer: staging, bytesPerRow },
+			[srcW, srcH, 1]
+		);
+		device.queue.submit([encoder.finish()]);
+		await staging.mapAsync(GPUMapMode.READ);
+		const mapped = new Uint8Array(staging.getMappedRange());
+
+		// Full loupe buffer; outside-doc samples stay white like paper.
+		const pixels = new Uint8ClampedArray(full * full * 4);
+		pixels.fill(255);
+		const destOx = x0 - (cx - r);
+		const destOy = y0 - (cy - r);
+		for (let row = 0; row < srcH; row++) {
+			const srcOff = row * bytesPerRow;
+			const dstOff = ((destOy + row) * full + destOx) * 4;
+			pixels.set(mapped.subarray(srcOff, srcOff + unpadded), dstOff);
+		}
+
+		const i = (r * full + r) * 4;
+		const hex = `#${[pixels[i], pixels[i + 1], pixels[i + 2]]
+			.map((n) => n.toString(16).padStart(2, '0'))
+			.join('')}`;
+
+		staging.unmap();
+		staging.destroy();
+		return { width: full, height: full, pixels, hex };
+	}
 }
 
 export { DOC_W, DOC_H };
