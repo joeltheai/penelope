@@ -1,5 +1,19 @@
 <script lang="ts">
-	import { createGpuPaint, type BrushKind, type GpuPaint } from '$lib/gpuPaint';
+	import {
+		createGpuPaint,
+		sanitizeDocSize,
+		type BrushKind,
+		type GpuPaint
+	} from '$lib/gpuPaint';
+	import {
+		fitDocumentZoom,
+		placeDocAtScreen as placeDocAtScreenCam,
+		screenToDoc as screenToDocCamMath,
+		setViewAroundPivot as setViewAroundPivotCam
+	} from '$lib/canvasCamera';
+	import EyedropperLoupe from '$lib/EyedropperLoupe.svelte';
+	import ResizeCanvasOverlay from '$lib/ResizeCanvasOverlay.svelte';
+	import { untrack } from 'svelte';
 	import {
 		addStrokeDistance,
 		createPenPressureState,
@@ -24,8 +38,12 @@
 		canUndo = $bindable(false),
 		canRedo = $bindable(false),
 		historyApi = $bindable(null as null | HistoryApi),
+		docW = $bindable(2000),
+		docH = $bindable(2000),
 		zoom = $bindable(1),
-		eyedropper = $bindable(false)
+		eyedropper = $bindable(false),
+		resizeMode = $bindable(false),
+		mirrorView = $bindable(false)
 	}: {
 		color?: string;
 		size?: number;
@@ -37,14 +55,19 @@
 		canUndo?: boolean;
 		canRedo?: boolean;
 		historyApi?: null | HistoryApi;
+		docW?: number;
+		docH?: number;
 		zoom?: number;
 		eyedropper?: boolean;
+		resizeMode?: boolean;
+		/** Temporary view flip across vertical axis (does not alter pixels). */
+		mirrorView?: boolean;
 	} = $props();
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let gpuError = $state<string | null>(null);
 
-	let space = false;
+	let space = $state(false);
 	let alt = false;
 	let rotateKey = false;
 
@@ -55,91 +78,47 @@
 	let gpuRef: GpuPaint | null = null;
 	let screenToDocRef: ((sx: number, sy: number) => { x: number; y: number }) | null = null;
 
-	const LOUPE_RADIUS = 11;
-	const LOUPE_SIZE = 118;
-	const LOUPE_OFFSET_Y = 72;
+	/** Camera mirrors for resize overlay (rotation is forced to 0 in resize mode). */
+	let camX = $state(0);
+	let camY = $state(0);
+	let surfaceW = $state(0);
+	let surfaceH = $state(0);
 
-	let loupeActive = $state(false);
-	let loupeX = $state(0);
-	let loupeY = $state(0);
-	let loupeHex = $state('#000000');
-	let loupeCanvasEl: HTMLCanvasElement | undefined = $state();
-	let loupeBusy = false;
-	let loupePending: { sx: number; sy: number } | null = null;
+	/** New canvas frame in current document space. */
+	let cropX = $state(0);
+	let cropY = $state(0);
+	let cropW = $state(2000);
+	let cropH = $state(2000);
 
-	async function updateLoupe(sx: number, sy: number) {
-		if (!gpuRef || !screenToDocRef) return;
-		if (loupeBusy) {
-			loupePending = { sx, sy };
-			return;
-		}
-		loupeBusy = true;
-		loupeX = sx;
-		loupeY = sy;
-		loupeActive = true;
-		try {
-			do {
-				const next = loupePending ?? { sx, sy };
-				loupePending = null;
-				sx = next.sx;
-				sy = next.sy;
-				loupeX = sx;
-				loupeY = sy;
+	let enterResizeImpl: (() => void) | null = null;
+	let applyResizeImpl: (() => void) | null = null;
+	let resizeZoomImpl: ((sx: number, sy: number, factor: number) => void) | null = null;
+	let resizePanImpl: ((dx: number, dy: number) => void) | null = null;
+	let presentImpl: (() => void) | null = null;
 
-				const p = screenToDocRef(sx, sy);
-				const patch = await gpuRef.samplePatch(p.x, p.y, LOUPE_RADIUS);
-				const canvas = loupeCanvasEl;
-				const ctx = canvas?.getContext('2d');
-				const full = LOUPE_RADIUS * 2 + 1;
-
-				if (!patch) {
-					loupeHex = '#1c1c1d';
-					if (ctx && canvas) {
-						ctx.fillStyle = '#1c1c1d';
-						ctx.fillRect(0, 0, full, full);
-					}
-					continue;
-				}
-
-				loupeHex = patch.hex;
-				color = patch.hex;
-
-				if (ctx && canvas) {
-					const img = ctx.createImageData(patch.width, patch.height);
-					img.data.set(patch.pixels);
-					ctx.putImageData(img, 0, 0);
-				}
-			} while (loupePending);
-		} finally {
-			loupeBusy = false;
-		}
+	function cancelResizeMode() {
+		resizeMode = false;
 	}
 
-	function onLoupePointerDown(e: PointerEvent) {
-		if (e.button !== 0 && e.pointerType === 'mouse') return;
-		e.preventDefault();
-		const el = e.currentTarget as HTMLElement;
-		el.setPointerCapture(e.pointerId);
-		void updateLoupe(e.clientX, e.clientY);
+	function applyResizeMode() {
+		applyResizeImpl?.();
 	}
 
-	function onLoupePointerMove(e: PointerEvent) {
-		const el = e.currentTarget as HTMLElement;
-		if (!el.hasPointerCapture(e.pointerId)) return;
-		void updateLoupe(e.clientX, e.clientY);
+	async function sampleLoupe(sx: number, sy: number) {
+		if (!gpuRef || !screenToDocRef) return null;
+		const p = screenToDocRef(sx, sy);
+		return gpuRef.samplePatch(p.x, p.y, 11);
 	}
 
-	function onLoupePointerUp(e: PointerEvent) {
-		const el = e.currentTarget as HTMLElement;
-		if (el.hasPointerCapture(e.pointerId)) {
-			el.releasePointerCapture(e.pointerId);
-		}
-		if (loupeActive) {
-			color = loupeHex;
-		}
-		loupeActive = false;
-		eyedropper = false;
-	}
+	$effect(() => {
+		if (!resizeMode) return;
+		enterResizeImpl?.();
+	});
+
+	$effect(() => {
+		void mirrorView;
+		presentImpl?.();
+	});
 
 	function isEditableTarget(target: EventTarget | null) {
 		if (!(target instanceof HTMLElement)) return false;
@@ -149,9 +128,17 @@
 	}
 
 	function onKeyDown(e: KeyboardEvent) {
+		if (e.code === 'Escape' && resizeMode) {
+			cancelResizeMode();
+			return;
+		}
 		if (e.code === 'Escape' && eyedropper) {
 			eyedropper = false;
-			loupeActive = false;
+			return;
+		}
+		if (e.code === 'Enter' && resizeMode) {
+			e.preventDefault();
+			applyResizeMode();
 			return;
 		}
 		if (e.code === 'Space') {
@@ -160,6 +147,11 @@
 		}
 		if (e.code === 'AltLeft' || e.code === 'AltRight') alt = true;
 		if (e.code === 'KeyR') rotateKey = true;
+		if (e.code === 'KeyM' && !e.metaKey && !e.ctrlKey && !e.altKey && !isEditableTarget(e.target)) {
+			e.preventDefault();
+			if (!resizeMode) mirrorView = !mirrorView;
+			return;
+		}
 
 		const mod = e.metaKey || e.ctrlKey;
 		if (!mod || isEditableTarget(e.target)) return;
@@ -188,10 +180,11 @@
 		let cancelled = false;
 		let gpu: GpuPaint | null = null;
 
-		const view = { x: 0, y: 0, zoom: 1, rotation: 0 };
+		const view = { x: 0, y: 0, zoom: 1, rotation: 0, flipX: 1 };
 		let cssW = 0;
 		let cssH = 0;
 		let fittedOnce = false;
+		let mirrorApplied = untrack(() => mirrorView);
 
 		let drawing = false;
 		let strokeActive = false;
@@ -318,25 +311,18 @@
 			else if (tap.maxFingers === 3) runRedo();
 		}
 
+		function viewFlipX() {
+			return mirrorView ? -1 : 1;
+		}
+
 		function screenToDoc(sx: number, sy: number) {
 			if (!gpu) return { x: 0, y: 0 };
-			const DOC_W = gpu.docW;
-			const DOC_H = gpu.docH;
-			const cx = cssW / 2;
-			const cy = cssH / 2;
-			let x = sx - cx - view.x;
-			let y = sy - cy - view.y;
-			const cos = Math.cos(-view.rotation);
-			const sin = Math.sin(-view.rotation);
-			const ux = x * cos - y * sin;
-			const uy = x * sin + y * cos;
-			return {
-				x: ux / view.zoom + DOC_W / 2,
-				y: uy / view.zoom + DOC_H / 2
-			};
+			view.flipX = viewFlipX();
+			return screenToDocCamMath(sx, sy, view, cssW, cssH, gpu.docW, gpu.docH);
 		}
 
 		function present() {
+			view.flipX = viewFlipX();
 			gpu?.present(view, cssW, cssH, opacity, strokeActive);
 		}
 
@@ -351,36 +337,17 @@
 			});
 		}
 
-		/** Keep the doc point under `pivot` fixed when zoom/rotation change. */
 		function setViewAroundPivot(pivotX: number, pivotY: number, newZoom: number, newRotation: number) {
-			const MIN_Z = 0.05;
-			const MAX_Z = 20;
 			if (!gpu) return;
-			const before = screenToDoc(pivotX, pivotY);
-			view.zoom = Math.min(MAX_Z, Math.max(MIN_Z, newZoom));
-			view.rotation = newRotation;
-
-			const cos = Math.cos(view.rotation);
-			const sin = Math.sin(view.rotation);
-			const dx = (before.x - gpu.docW / 2) * view.zoom;
-			const dy = (before.y - gpu.docH / 2) * view.zoom;
-			const rx = dx * cos - dy * sin;
-			const ry = dx * sin + dy * cos;
-			view.x = pivotX - cssW / 2 - rx;
-			view.y = pivotY - cssH / 2 - ry;
+			view.flipX = viewFlipX();
+			setViewAroundPivotCam(view, pivotX, pivotY, newZoom, newRotation, cssW, cssH, gpu.docW, gpu.docH);
 			schedulePresent();
 		}
 
 		function placeDocAtScreen(docPoint: { x: number; y: number }, screenX: number, screenY: number) {
 			if (!gpu) return;
-			const cos = Math.cos(view.rotation);
-			const sin = Math.sin(view.rotation);
-			const dx = (docPoint.x - gpu.docW / 2) * view.zoom;
-			const dy = (docPoint.y - gpu.docH / 2) * view.zoom;
-			const rx = dx * cos - dy * sin;
-			const ry = dx * sin + dy * cos;
-			view.x = screenX - cssW / 2 - rx;
-			view.y = screenY - cssH / 2 - ry;
+			view.flipX = viewFlipX();
+			placeDocAtScreenCam(view, docPoint, screenX, screenY, cssW, cssH, gpu.docW, gpu.docH);
 		}
 
 		function stopAirbrushTimer() {
@@ -432,21 +399,84 @@
 
 		function syncZoom() {
 			zoom = view.zoom;
+			camX = view.x;
+			camY = view.y;
+			surfaceW = cssW;
+			surfaceH = cssH;
 		}
 
 		function runUndo() {
-			if (!gpu || drawing || strokeActive) return;
+			if (resizeMode || !gpu || drawing || strokeActive) return;
 			gpu.undo();
 			present();
 			syncHistoryFlags();
 		}
 
 		function runRedo() {
-			if (!gpu || drawing || strokeActive) return;
+			if (resizeMode || !gpu || drawing || strokeActive) return;
 			gpu.redo();
 			present();
 			syncHistoryFlags();
 		}
+
+		function beginResizeMode() {
+			if (!gpu) return;
+			if (drawing || strokeActive) {
+				cancelStroke();
+				drawing = false;
+			}
+			eyedropper = false;
+			mirrorView = false;
+			view.rotation = 0;
+			view.flipX = 1;
+			cropX = 0;
+			cropY = 0;
+			cropW = gpu.docW;
+			cropH = gpu.docH;
+			fitDocumentToScreen();
+			present();
+		}
+
+		async function commitResizeMode() {
+			if (!gpu || drawing || strokeActive) return;
+			const nextW = sanitizeDocSize(cropW);
+			const nextH = sanitizeDocSize(cropH);
+			const changed = await gpu.resizeDocument(nextW, nextH, {
+				cropX: Math.round(cropX),
+				cropY: Math.round(cropY)
+			});
+			if (!gpu) return;
+			docW = gpu.docW;
+			docH = gpu.docH;
+			resizeMode = false;
+			if (changed) {
+				fitDocumentToScreen();
+			}
+			present();
+			syncHistoryFlags();
+		}
+
+		enterResizeImpl = beginResizeMode;
+		applyResizeImpl = commitResizeMode;
+		presentImpl = () => {
+			const next = mirrorView;
+			if (next !== mirrorApplied) {
+				// Keep the viewport center fixed when toggling.
+				view.x = -view.x;
+				mirrorApplied = next;
+				syncZoom();
+			}
+			schedulePresent();
+		};
+		resizeZoomImpl = (sx, sy, factor) => {
+			setViewAroundPivot(sx, sy, view.zoom * factor, 0);
+		};
+		resizePanImpl = (dx, dy) => {
+			view.x += dx;
+			view.y += dy;
+			syncZoom();
+			schedulePresent();
+		};
 
 		function endStroke() {
 			if (!strokeActive || !gpu) return;
@@ -484,11 +514,7 @@
 		/** Zoom so the full document fits in the viewport (centered). */
 		function fitDocumentToScreen() {
 			if (!gpu || cssW < 1 || cssH < 1) return;
-			const MIN_Z = 0.05;
-			const MAX_Z = 20;
-			const margin = 0.92;
-			const nextZoom = Math.min(cssW / gpu.docW, cssH / gpu.docH) * margin;
-			view.zoom = Math.min(MAX_Z, Math.max(MIN_Z, nextZoom));
+			view.zoom = fitDocumentZoom(cssW, cssH, gpu.docW, gpu.docH);
 			view.x = 0;
 			view.y = 0;
 			view.rotation = 0;
@@ -557,6 +583,7 @@
 		}
 
 		function onPointerDown(e: PointerEvent) {
+			if (resizeMode) return;
 			e.preventDefault();
 			const active = document.activeElement;
 			if (active instanceof HTMLElement && active !== surface) active.blur();
@@ -634,7 +661,9 @@
 						MAX_Z,
 						Math.max(MIN_Z, pinch.startZoom * (dist / Math.max(pinch.startDist, 1e-6)))
 					);
-					view.rotation = pinch.startRotation + (angle - pinch.startAngle);
+					// Negate twist while mirrored so screen-space rotation feels natural.
+					view.rotation =
+						pinch.startRotation + (angle - pinch.startAngle) * viewFlipX();
 					placeDocAtScreen(pinch.docPoint, midX, midY);
 					schedulePresent();
 					return;
@@ -653,7 +682,13 @@
 						if (dAng > Math.PI) dAng -= Math.PI * 2;
 						if (dAng < -Math.PI) dAng += Math.PI * 2;
 						lastRotateAngle = ang;
-						setViewAroundPivot(rotatePivot.x, rotatePivot.y, view.zoom, view.rotation + dAng);
+						// Negate while mirrored so screen-space rotation feels natural.
+						setViewAroundPivot(
+							rotatePivot.x,
+							rotatePivot.y,
+							view.zoom,
+							view.rotation + dAng * viewFlipX()
+						);
 					}
 				}
 				return;
@@ -728,7 +763,8 @@
 
 		(async () => {
 			try {
-				const painter = await createGpuPaint(surface);
+				const initial = untrack(() => ({ width: docW, height: docH }));
+				const painter = await createGpuPaint(surface, initial);
 				if (cancelled) {
 					painter.destroy();
 					return;
@@ -736,7 +772,9 @@
 				gpu = painter;
 				gpuRef = painter;
 				screenToDocRef = screenToDoc;
-				gpu.setBrush(brush);
+				docW = painter.docW;
+				docH = painter.docH;
+				gpu.setBrush(untrack(() => brush));
 				gpuError = null;
 				undoFn = runUndo;
 				redoFn = runRedo;
@@ -744,6 +782,7 @@
 				syncHistoryFlags();
 				ro.observe(surface);
 				resize();
+				if (untrack(() => resizeMode)) beginResizeMode();
 			} catch (err) {
 				if (cancelled) return;
 				gpuError = err instanceof Error ? err.message : 'WebGPU failed to initialize';
@@ -757,6 +796,11 @@
 			undoFn = null;
 			redoFn = null;
 			historyApi = null;
+			enterResizeImpl = null;
+			applyResizeImpl = null;
+			presentImpl = null;
+			resizeZoomImpl = null;
+			resizePanImpl = null;
 			canUndo = false;
 			canRedo = false;
 			zoom = 1;
@@ -786,37 +830,29 @@
 	style:background="#1c1c1d"
 ></canvas>
 
+{#if resizeMode}
+	<ResizeCanvasOverlay
+		bind:cropX
+		bind:cropY
+		bind:cropW
+		bind:cropH
+		{camX}
+		{camY}
+		{zoom}
+		{surfaceW}
+		{surfaceH}
+		{docW}
+		{docH}
+		{space}
+		onPan={(dx, dy) => resizePanImpl?.(dx, dy)}
+		onZoom={(sx, sy, factor) => resizeZoomImpl?.(sx, sy, factor)}
+		onCancel={cancelResizeMode}
+		onApply={applyResizeMode}
+	/>
+{/if}
+
 {#if eyedropper}
-	<div
-		class="fixed inset-0 z-50 touch-none"
-		style:cursor="none"
-		role="presentation"
-		aria-label="Eyedropper"
-		onpointerdown={onLoupePointerDown}
-		onpointermove={onLoupePointerMove}
-		onpointerup={onLoupePointerUp}
-		onpointercancel={onLoupePointerUp}
-	>
-		{#if loupeActive}
-			<div
-				class="loupe pointer-events-none"
-				style:left="{loupeX}px"
-				style:top="{loupeY - LOUPE_OFFSET_Y}px"
-				style:width="{LOUPE_SIZE}px"
-				style:height="{LOUPE_SIZE}px"
-				aria-hidden="true"
-			>
-				<canvas
-					bind:this={loupeCanvasEl}
-					width={LOUPE_RADIUS * 2 + 1}
-					height={LOUPE_RADIUS * 2 + 1}
-					class="loupe-canvas"
-				></canvas>
-				<div class="loupe-cross" style:background={loupeHex}></div>
-				<div class="loupe-ring"></div>
-			</div>
-		{/if}
-	</div>
+	<EyedropperLoupe bind:color bind:active={eyedropper} sample={sampleLoupe} />
 {/if}
 
 {#if gpuError}
@@ -826,45 +862,3 @@
 		</p>
 	</div>
 {/if}
-
-<style>
-	.loupe {
-		position: fixed;
-		translate: -50% -50%;
-		border-radius: 9999px;
-		overflow: hidden;
-		box-shadow:
-			0 8px 28px rgba(0, 0, 0, 0.45),
-			0 0 0 3px #fff,
-			0 0 0 4px rgba(0, 0, 0, 0.35);
-		background: #111;
-		z-index: 60;
-	}
-
-	.loupe-canvas {
-		width: 100%;
-		height: 100%;
-		image-rendering: pixelated;
-		display: block;
-	}
-
-	.loupe-cross {
-		position: absolute;
-		top: 50%;
-		left: 50%;
-		width: 14px;
-		height: 14px;
-		translate: -50% -50%;
-		border-radius: 9999px;
-		border: 2px solid #fff;
-		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
-	}
-
-	.loupe-ring {
-		position: absolute;
-		inset: 0;
-		border-radius: 9999px;
-		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
-		pointer-events: none;
-	}
-</style>
