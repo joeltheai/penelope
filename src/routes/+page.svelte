@@ -150,9 +150,7 @@
 	bind:eyedropper
 />
 
-<div class="fixed top-4 right-4 z-10">
-	<ColorPicker bind:color bind:picking={eyedropper} />
-</div>
+<ColorPicker bind:color bind:picking={eyedropper} />
 
 <!-- Size + opacity rollers (draggable) -->
 {#if panelReady}
