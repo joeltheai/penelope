@@ -5,6 +5,14 @@ export {
 	MAX_DOC_SIZE,
 	sanitizeDocSize
 } from './constants';
-export type { BrushKind, GpuPaint, LassoMode, LassoOptions, ViewState } from './types';
+export type {
+	BrushKind,
+	GpuPaint,
+	LassoMode,
+	LassoOptions,
+	RasterPatch,
+	Rect,
+	ViewState
+} from './types';
 export { DEFAULT_LASSO_OPTIONS } from './lasso';
 export { createGpuPaint } from './createGpuPaint';

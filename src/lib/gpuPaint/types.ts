@@ -13,6 +13,13 @@ export type BrushKind = 'pen' | 'airbrush' | 'lasso' | 'fan' | 'fanFade';
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
+/** Exact dirty-rectangle pixels before and after a committed stroke. */
+export type RasterPatch = {
+	bounds: Rect;
+	before: Uint8Array;
+	after: Uint8Array;
+};
+
 export type LassoMode = 'fill' | 'pull';
 
 export type LassoOptions = {
@@ -38,13 +45,19 @@ export type GpuPaint = {
 	setBrush: (brush: BrushKind) => void;
 	setLassoOptions: (opts: Partial<LassoOptions>) => void;
 	beginStroke: () => void;
-	endStroke: (opacity: number) => void;
+	endStroke: (opacity: number) => Promise<RasterPatch | null>;
 	/** Discard in-progress stroke without compositing or undo entry. */
 	cancelStroke: () => void;
 	undo: () => boolean;
 	redo: () => boolean;
 	canUndo: () => boolean;
 	canRedo: () => boolean;
+	/** Upload an exact history patch into the committed document texture. */
+	applyRasterPatch: (bounds: Rect, pixels: Uint8Array) => void;
+	/** Read the entire committed document in tightly packed RGBA8 form. */
+	readDocument: () => Promise<Uint8Array | null>;
+	/** Dispose transient GPU undo patches after persistent history takes ownership. */
+	clearHotHistory: () => void;
 	addSample: (
 		x: number,
 		y: number,

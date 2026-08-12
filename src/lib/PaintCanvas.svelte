@@ -7,6 +7,16 @@
 		type LassoOptions
 	} from '$lib/gpuPaint';
 	import {
+		EMPTY_HISTORY_STATE,
+		PersistentHistory,
+		type HistoryApi,
+		type HistoryGraphData,
+		type HistorySnapshot,
+		type HistoryUiState
+	} from '$lib/historyStore';
+	import { HistoryReplaySession, renderHistorySnapshots } from '$lib/historyPreview';
+	import { downloadTimelapse, renderTimelapse } from '$lib/timelapse';
+	import {
 		fitDocumentZoom,
 		placeDocAtScreen as placeDocAtScreenCam,
 		screenToDoc as screenToDocCamMath,
@@ -26,8 +36,6 @@
 		updateHasPressure
 	} from '$lib/penPressure';
 
-	type HistoryApi = { undo: () => void; redo: () => void };
-
 	let {
 		color = $bindable('#1a6cff'),
 		size = $bindable(8),
@@ -43,12 +51,14 @@
 		canUndo = $bindable(false),
 		canRedo = $bindable(false),
 		historyApi = $bindable(null as null | HistoryApi),
+		historyState = $bindable({ ...EMPTY_HISTORY_STATE } as HistoryUiState),
 		docW = $bindable(2000),
 		docH = $bindable(2000),
 		zoom = $bindable(1),
 		eyedropper = $bindable(false),
 		resizeMode = $bindable(false),
-		mirrorView = $bindable(false)
+		mirrorView = $bindable(false),
+		suspended = false
 	}: {
 		color?: string;
 		size?: number;
@@ -61,11 +71,13 @@
 		canUndo?: boolean;
 		canRedo?: boolean;
 		historyApi?: null | HistoryApi;
+		historyState?: HistoryUiState;
 		docW?: number;
 		docH?: number;
 		zoom?: number;
 		eyedropper?: boolean;
 		resizeMode?: boolean;
+		suspended?: boolean;
 		/** Temporary view flip across vertical axis (does not alter pixels). */
 		mirrorView?: boolean;
 	} = $props();
@@ -134,6 +146,7 @@
 	}
 
 	function onKeyDown(e: KeyboardEvent) {
+		if (suspended) return;
 		if (e.code === 'Escape' && resizeMode) {
 			cancelResizeMode();
 			return;
@@ -185,6 +198,15 @@
 
 		let cancelled = false;
 		let gpu: GpuPaint | null = null;
+		let history: PersistentHistory | null = null;
+		let historyQueue: Promise<void> = Promise.resolve();
+		let historyBusy = false;
+		let replaying = false;
+		let previewAbort: AbortController | null = null;
+		let replaySession: HistoryReplaySession | null = null;
+		let replayQueue: Promise<unknown> = Promise.resolve();
+		let exportProgress: number | null = null;
+		let historyError: string | null = null;
 
 		const view = { x: 0, y: 0, zoom: 1, rotation: 0, flipX: 1 };
 		let cssW = 0;
@@ -395,13 +417,22 @@
 		}
 
 		function syncHistoryFlags() {
-			if (!gpu) {
+			if (!history) {
 				canUndo = false;
 				canRedo = false;
+				historyState = { ...EMPTY_HISTORY_STATE };
 				return;
 			}
-			canUndo = gpu.canUndo();
-			canRedo = gpu.canRedo();
+			const next = history.getState();
+			historyState = {
+				...next,
+				busy: historyBusy,
+				replaying,
+				exportProgress,
+				error: historyError
+			};
+			canUndo = !historyBusy && next.canUndo;
+			canRedo = !historyBusy && next.canRedo;
 		}
 
 		function syncZoom() {
@@ -412,18 +443,180 @@
 			surfaceH = cssH;
 		}
 
-		function runUndo() {
-			if (resizeMode || !gpu || drawing || strokeActive) return;
-			gpu.undo();
-			present();
+		async function runHistoryOperation(operation: () => Promise<void>) {
+			if (resizeMode || !gpu || !history || drawing || strokeActive || historyBusy) return;
+			historyBusy = true;
+			historyError = null;
 			syncHistoryFlags();
+			try {
+				await historyQueue;
+				await operation();
+				gpu.clearHotHistory();
+				present();
+			} catch (error) {
+				historyError = error instanceof Error ? error.message : 'History operation failed';
+			} finally {
+				historyBusy = false;
+				syncHistoryFlags();
+			}
+		}
+
+		function applyStoredPatch(bounds: { x: number; y: number; w: number; h: number }, pixels: Uint8Array) {
+			gpu?.applyRasterPatch(bounds, pixels);
+		}
+
+		function runUndo() {
+			return runHistoryOperation(async () => {
+				await history?.undo(applyStoredPatch);
+			});
 		}
 
 		function runRedo() {
-			if (resizeMode || !gpu || drawing || strokeActive) return;
-			gpu.redo();
-			present();
+			return runHistoryOperation(async () => {
+				await history?.redo(applyStoredPatch);
+			});
+		}
+
+		function seekHistory(index: number) {
+			return runHistoryOperation(async () => {
+				await history?.seekIndex(index, applyStoredPatch);
+			});
+		}
+
+		function forkHistory() {
+			return runHistoryOperation(async () => {
+				await history?.fork();
+			});
+		}
+
+		function switchHistoryBranch(branchId: string) {
+			return runHistoryOperation(async () => {
+				await history?.switchBranch(branchId, applyStoredPatch);
+			});
+		}
+
+		function renameHistoryBranch(branchId: string, name: string) {
+			return runHistoryOperation(async () => {
+				await history?.renameBranch(branchId, name);
+			});
+		}
+
+		function deleteHistoryBranch(branchId: string) {
+			return runHistoryOperation(async () => {
+				await history?.deleteBranch(branchId, applyStoredPatch);
+			});
+		}
+
+		function pauseReplay() {
+			previewAbort?.abort();
+			previewAbort = null;
+			replaying = false;
 			syncHistoryFlags();
+		}
+
+		function closeReplay() {
+			pauseReplay();
+			replaySession = null;
+			replayQueue = Promise.resolve();
+		}
+
+		async function getHistoryGraph(): Promise<HistoryGraphData> {
+			await historyQueue;
+			if (!history) throw new Error('History is not ready');
+			return history.getGraphData();
+		}
+
+		async function getHistorySnapshots(
+			nodeIds: Array<string | null>
+		): Promise<HistorySnapshot[]> {
+			await historyQueue;
+			if (!history) throw new Error('History is not ready');
+			return renderHistorySnapshots(history, history.getGraphData(), nodeIds);
+		}
+
+		async function openHistoryReplay(branchId: string, canvas: HTMLCanvasElement) {
+			if (!history) throw new Error('History is not ready');
+			closeReplay();
+			await historyQueue;
+			replaySession = new HistoryReplaySession(history, branchId, canvas);
+			return { index: replaySession.index, total: replaySession.total };
+		}
+
+		async function seekHistoryReplay(index: number) {
+			pauseReplay();
+			const session = replaySession;
+			if (!session) throw new Error('Replay is not open');
+			const operation = replayQueue
+				.catch(() => undefined)
+				.then(() => session.seek(index));
+			replayQueue = operation;
+			return operation;
+		}
+
+		async function playHistoryReplay(options: {
+			fps: number;
+			onFrame?: (index: number) => void;
+		}) {
+			const session = replaySession;
+			if (!session) throw new Error('Replay is not open');
+			pauseReplay();
+			const controller = new AbortController();
+			previewAbort = controller;
+			replaying = true;
+			historyError = null;
+			syncHistoryFlags();
+			const operation = replayQueue.catch(() => undefined).then(async () => {
+				if (session.index >= session.total) {
+					await session.seek(0, controller.signal);
+					options.onFrame?.(0);
+				}
+				await session.play({
+					...options,
+					signal: controller.signal
+				});
+			});
+			replayQueue = operation;
+			try {
+				await operation;
+			} catch (error) {
+				if (controller.signal.aborted) return;
+				historyError = error instanceof Error ? error.message : 'Replay failed';
+			} finally {
+				if (previewAbort === controller) {
+					previewAbort = null;
+					replaying = false;
+					syncHistoryFlags();
+				}
+			}
+		}
+
+		async function exportHistoryVideo(options: {
+			fps: number;
+			maxDimension: 720 | 1280 | 1920;
+			branchId?: string;
+		}) {
+			if (!history || historyBusy) return;
+			historyBusy = true;
+			exportProgress = 0;
+			historyError = null;
+			syncHistoryFlags();
+			try {
+				await historyQueue;
+				const blob = await renderTimelapse(history, {
+					...options,
+					onProgress(progress) {
+						exportProgress = progress;
+						syncHistoryFlags();
+					}
+				});
+				downloadTimelapse(blob);
+			} catch (error) {
+				historyError = error instanceof Error ? error.message : 'Timelapse export failed';
+			} finally {
+				historyBusy = false;
+				exportProgress = null;
+				syncHistoryFlags();
+			}
 		}
 
 		function beginResizeMode() {
@@ -445,22 +638,34 @@
 		}
 
 		async function commitResizeMode() {
-			if (!gpu || drawing || strokeActive) return;
-			const nextW = sanitizeDocSize(cropW);
-			const nextH = sanitizeDocSize(cropH);
-			const changed = await gpu.resizeDocument(nextW, nextH, {
-				cropX: Math.round(cropX),
-				cropY: Math.round(cropY)
-			});
-			if (!gpu) return;
-			docW = gpu.docW;
-			docH = gpu.docH;
-			resizeMode = false;
-			if (changed) {
-				fitDocumentToScreen();
-			}
-			present();
+			if (!gpu || !history || drawing || strokeActive || historyBusy) return;
+			historyBusy = true;
+			historyError = null;
 			syncHistoryFlags();
+			try {
+				await historyQueue;
+				const nextW = sanitizeDocSize(cropW);
+				const nextH = sanitizeDocSize(cropH);
+				const changed = await gpu.resizeDocument(nextW, nextH, {
+					cropX: Math.round(cropX),
+					cropY: Math.round(cropY)
+				});
+				if (!gpu) return;
+				docW = gpu.docW;
+				docH = gpu.docH;
+				resizeMode = false;
+				if (changed) {
+					const baseline = await gpu.readDocument();
+					if (baseline) await history.reset(gpu.docW, gpu.docH, baseline);
+					fitDocumentToScreen();
+				}
+				present();
+			} catch (error) {
+				historyError = error instanceof Error ? error.message : 'Canvas resize failed';
+			} finally {
+				historyBusy = false;
+				syncHistoryFlags();
+			}
 		}
 
 		enterResizeImpl = beginResizeMode;
@@ -486,9 +691,26 @@
 		};
 
 		function endStroke() {
-			if (!strokeActive || !gpu) return;
+			if (!strokeActive || !gpu || !history) return;
 			stopAirbrushTimer();
-			gpu.endStroke(opacity);
+			const patchPromise = gpu.endStroke(opacity);
+			historyBusy = true;
+			syncHistoryFlags();
+			historyQueue = historyQueue
+				.then(async () => {
+					const patch = await patchPromise;
+					if (patch) await history?.append(patch);
+					gpu?.clearHotHistory();
+					syncHistoryFlags();
+				})
+				.catch((error) => {
+					historyError = error instanceof Error ? error.message : 'Could not save stroke history';
+					syncHistoryFlags();
+				})
+				.finally(() => {
+					historyBusy = false;
+					syncHistoryFlags();
+				});
 			strokeActive = false;
 			lastAirbrush = null;
 			present();
@@ -590,7 +812,7 @@
 		}
 
 		function onPointerDown(e: PointerEvent) {
-			if (resizeMode) return;
+			if (suspended || resizeMode || historyBusy) return;
 			e.preventDefault();
 			const active = document.activeElement;
 			if (active instanceof HTMLElement && active !== surface) active.blur();
@@ -771,11 +993,19 @@
 		(async () => {
 			try {
 				const initial = untrack(() => ({ width: docW, height: docH }));
-				const painter = await createGpuPaint(surface, initial);
+				const storedHistory = await PersistentHistory.open(initial.width, initial.height);
+				const restoredPixels = await storedHistory.materialize();
+				const painter = await createGpuPaint(surface, {
+					width: storedHistory.width,
+					height: storedHistory.height,
+					pixels: restoredPixels
+				});
 				if (cancelled) {
 					painter.destroy();
+					storedHistory.close();
 					return;
 				}
+				history = storedHistory;
 				gpu = painter;
 				gpuRef = painter;
 				screenToDocRef = screenToDoc;
@@ -786,8 +1016,25 @@
 				gpuError = null;
 				undoFn = runUndo;
 				redoFn = runRedo;
-				historyApi = { undo: runUndo, redo: runRedo };
+				historyApi = {
+					undo: runUndo,
+					redo: runRedo,
+					seek: seekHistory,
+					fork: forkHistory,
+					switchBranch: switchHistoryBranch,
+					renameBranch: renameHistoryBranch,
+					deleteBranch: deleteHistoryBranch,
+					getGraph: getHistoryGraph,
+					getSnapshots: getHistorySnapshots,
+					openReplay: openHistoryReplay,
+					seekReplay: seekHistoryReplay,
+					playReplay: playHistoryReplay,
+					pauseReplay,
+					closeReplay,
+					exportVideo: exportHistoryVideo
+				};
 				syncHistoryFlags();
+				void navigator.storage?.persist?.();
 				ro.observe(surface);
 				resize();
 				if (untrack(() => resizeMode)) beginResizeMode();
@@ -799,11 +1046,13 @@
 
 		return () => {
 			cancelled = true;
+			closeReplay();
 			stopAirbrushTimer();
 			if (presentRaf) cancelAnimationFrame(presentRaf);
 			undoFn = null;
 			redoFn = null;
 			historyApi = null;
+			historyState = { ...EMPTY_HISTORY_STATE };
 			enterResizeImpl = null;
 			applyResizeImpl = null;
 			presentImpl = null;
@@ -815,6 +1064,8 @@
 			ro.disconnect();
 			gpu?.destroy();
 			gpu = null;
+			history?.close();
+			history = null;
 			gpuRef = null;
 			screenToDocRef = null;
 			surface.removeEventListener('pointerdown', onPointerDown);

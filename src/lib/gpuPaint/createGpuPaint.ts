@@ -37,7 +37,7 @@ import {
 } from './schemas';
 import { createPaintPipelines } from './pipelines';
 import { createStrokeBoundsTracker } from './strokeBounds';
-import type { BrushKind, GpuPaint, LassoOptions, Rect, ViewState } from './types';
+import type { BrushKind, GpuPaint, LassoOptions, RasterPatch, Rect, ViewState } from './types';
 
 function isFanBrush(b: BrushKind): b is FanKind {
 	return b === 'fan' || b === 'fanFade';
@@ -45,7 +45,7 @@ function isFanBrush(b: BrushKind): b is FanKind {
 
 export async function createGpuPaint(
 	canvas: HTMLCanvasElement,
-	opts?: { width?: number; height?: number }
+	opts?: { width?: number; height?: number; pixels?: Uint8Array }
 ): Promise<GpuPaint> {
 	if (!navigator.gpu) throw new Error(webGpuUnavailableMessage());
 
@@ -152,7 +152,11 @@ export async function createGpuPaint(
 	rebuildDocSamplePipelines();
 
 	// White document background (Texture.clear is zero-fill only).
-	docTex.write(new Uint8Array(docW * docH * 4).fill(255));
+	const initialPixels =
+		opts?.pixels?.byteLength === docW * docH * 4
+			? opts.pixels
+			: new Uint8Array(docW * docH * 4).fill(255);
+	docTex.write(initialPixels);
 	strokeTex.clear();
 	strokeTexB.clear();
 
@@ -393,7 +397,13 @@ export async function createGpuPaint(
 			.draw(3);
 	}
 
-	async function readDocPixels(x0: number, y0: number, w: number, h: number): Promise<Uint8Array | null> {
+	async function readTexturePixels(
+		texture: PatchTex | typeof docTex,
+		x0: number,
+		y0: number,
+		w: number,
+		h: number
+	): Promise<Uint8Array | null> {
 		if (destroyed || w < 1 || h < 1) return null;
 		const bytesPerPixel = 4;
 		const unpadded = w * bytesPerPixel;
@@ -405,20 +415,32 @@ export async function createGpuPaint(
 		});
 		const encoder = device.createCommandEncoder();
 		encoder.copyTextureToBuffer(
-			{ texture: root.unwrap(docTex), origin: [x0, y0, 0] },
+			{ texture: root.unwrap(texture), origin: [x0, y0, 0] },
 			{ buffer: staging, bytesPerRow },
 			[w, h, 1]
 		);
 		device.queue.submit([encoder.finish()]);
-		await staging.mapAsync(GPUMapMode.READ);
-		const mapped = new Uint8Array(staging.getMappedRange());
-		const tightly = new Uint8Array(w * h * 4);
-		for (let row = 0; row < h; row++) {
-			tightly.set(mapped.subarray(row * bytesPerRow, row * bytesPerRow + unpadded), row * unpadded);
+		let mapped = false;
+		try {
+			await staging.mapAsync(GPUMapMode.READ);
+			mapped = true;
+			const source = new Uint8Array(staging.getMappedRange());
+			const tightly = new Uint8Array(w * h * 4);
+			for (let row = 0; row < h; row++) {
+				tightly.set(
+					source.subarray(row * bytesPerRow, row * bytesPerRow + unpadded),
+					row * unpadded
+				);
+			}
+			return tightly;
+		} finally {
+			if (mapped) staging.unmap();
+			staging.destroy();
 		}
-		staging.unmap();
-		staging.destroy();
-		return tightly;
+	}
+
+	function readDocPixels(x0: number, y0: number, w: number, h: number) {
+		return readTexturePixels(docTex, x0, y0, w, h);
 	}
 
 	async function samplePatchAt(x: number, y: number, radius: number) {
@@ -589,8 +611,8 @@ export async function createGpuPaint(
 			strokeBounds.reset();
 		},
 
-		endStroke(opacity: number) {
-			if (destroyed) return;
+		async endStroke(opacity: number): Promise<RasterPatch | null> {
+			if (destroyed) return null;
 
 			if (currentBrush === 'lasso') {
 				stampCount = 0;
@@ -602,7 +624,7 @@ export async function createGpuPaint(
 				if (!ok || !final) {
 					lastStamp = null;
 					strokeBounds.reset();
-					return;
+					return null;
 				}
 				strokeBounds.expand(final.x, final.y, 0);
 				strokeBounds.expand(final.x + final.w, final.y + final.h, 0);
@@ -614,7 +636,7 @@ export async function createGpuPaint(
 				if (!ok || !final) {
 					lastStamp = null;
 					strokeBounds.reset();
-					return;
+					return null;
 				}
 				strokeBounds.expand(final.x, final.y, 0);
 				strokeBounds.expand(final.x + final.w, final.y + final.h, 0);
@@ -623,6 +645,7 @@ export async function createGpuPaint(
 			}
 
 			const bounds = strokeBounds.finalize(docW, docH);
+			let serializedPatch: Promise<RasterPatch | null> | null = null;
 			if (bounds) {
 				clearRedoStack();
 				// Snapshot the dirty rect BEFORE compositing (pixels under the stroke).
@@ -630,6 +653,13 @@ export async function createGpuPaint(
 				compositeStroke(opacity);
 				// Snapshot AFTER compositing for redo.
 				const after = capturePatch(bounds);
+				serializedPatch = Promise.all([
+					readTexturePixels(prev, 0, 0, bounds.w, bounds.h),
+					readTexturePixels(after, 0, 0, bounds.w, bounds.h)
+				]).then(([beforePixels, afterPixels]) => {
+					if (!beforePixels || !afterPixels) return null;
+					return { bounds: { ...bounds }, before: beforePixels, after: afterPixels };
+				});
 				undoStack.push({ bounds, prev, after });
 				enforceHistoryBudget();
 			} else {
@@ -644,6 +674,7 @@ export async function createGpuPaint(
 			lasso.reset();
 			fan.reset();
 			strokeBounds.reset();
+			return serializedPatch ? await serializedPatch : null;
 		},
 
 		cancelStroke() {
@@ -681,6 +712,28 @@ export async function createGpuPaint(
 
 		canRedo() {
 			return !destroyed && redoStack.length > 0;
+		},
+
+		applyRasterPatch(bounds: Rect, pixels: Uint8Array) {
+			if (destroyed || pixels.byteLength !== bounds.w * bounds.h * 4) return;
+			root.device.queue.writeTexture(
+				{
+					texture: root.unwrap(docTex),
+					origin: { x: bounds.x, y: bounds.y, z: 0 }
+				},
+				pixels,
+				{ bytesPerRow: bounds.w * 4, rowsPerImage: bounds.h },
+				{ width: bounds.w, height: bounds.h, depthOrArrayLayers: 1 }
+			);
+		},
+
+		readDocument() {
+			return readDocPixels(0, 0, docW, docH);
+		},
+
+		clearHotHistory() {
+			while (undoStack.length > 0) disposeEntry(undoStack.pop()!);
+			while (redoStack.length > 0) disposeEntry(redoStack.pop()!);
 		},
 
 		addSample(

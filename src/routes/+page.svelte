@@ -1,5 +1,6 @@
 <script lang="ts">
 	import PaintCanvas from '$lib/PaintCanvas.svelte';
+	import HistoryGraphDialog from '$lib/HistoryGraphDialog.svelte';
 	import ColorPicker from '$lib/ColorPicker.svelte';
 	import SliderSize from '$lib/SliderSize.svelte';
 	import SliderOpacity from '$lib/SliderOpacity.svelte';
@@ -11,6 +12,11 @@
 		DEFAULT_DOC_W,
 		DEFAULT_DOC_H
 	} from '$lib/gpuPaint';
+	import {
+		EMPTY_HISTORY_STATE,
+		type HistoryApi,
+		type HistoryUiState
+	} from '$lib/historyStore';
 
 	const BRUSHES: {
 		id: BrushKind;
@@ -42,7 +48,8 @@
 	let pressureOpacity = $state(true);
 	let canUndo = $state(false);
 	let canRedo = $state(false);
-	let historyApi = $state<null | { undo: () => void; redo: () => void }>(null);
+	let historyApi = $state<HistoryApi | null>(null);
+	let historyState = $state<HistoryUiState>({ ...EMPTY_HISTORY_STATE });
 	let docW = $state(DEFAULT_DOC_W);
 	let docH = $state(DEFAULT_DOC_H);
 	let zoom = $state(1);
@@ -50,6 +57,7 @@
 	let eyedropper = $state(false);
 	let resizeMode = $state(false);
 	let mirrorView = $state(false);
+	let historyOpen = $state(false);
 
 	const PANEL_KEY = 'penelope.sliderPanel';
 	let panelX = $state(12);
@@ -176,12 +184,14 @@
 	bind:canUndo
 	bind:canRedo
 	bind:historyApi
+	bind:historyState
 	bind:docW
 	bind:docH
 	bind:zoom
 	bind:eyedropper
 	bind:resizeMode
 	bind:mirrorView
+	suspended={historyOpen}
 />
 
 {#if !resizeMode}
@@ -538,6 +548,16 @@
 			</button>
 			<button
 				type="button"
+				class={historyOpen ? toolBtnOn : toolBtn}
+				aria-label="History"
+				aria-pressed={historyOpen}
+				title="History and timelapse"
+				onclick={() => (historyOpen = !historyOpen)}
+			>
+				<span class="text-[11px] font-semibold">H</span>
+			</button>
+			<button
+				type="button"
 				class={toolBtn}
 				disabled={!canRedo}
 				aria-label="Redo"
@@ -635,3 +655,11 @@
 		</button>
 	{/if}
 </div>
+
+{#if historyOpen}
+	<HistoryGraphDialog
+		api={historyApi}
+		state={historyState}
+		onClose={() => (historyOpen = false)}
+	/>
+{/if}
