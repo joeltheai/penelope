@@ -317,16 +317,12 @@ export class PersistentHistory {
 			.map((branch): HistoryGraphBranch => {
 				const path = this.getPath(branch.id);
 				const firstOwnNode = path.find((node) => node.branchId === branch.id);
-				const forkNodeId =
-					branch.id === MAIN_BRANCH_ID
-						? null
-						: (firstOwnNode?.parentId ?? branch.tipNodeId);
+				const forkNodeId = firstOwnNode ? firstOwnNode.parentId : branch.tipNodeId;
+				const ownerBranchId = forkNodeId ? this.nodes.get(forkNodeId)?.branchId : undefined;
 				const parentBranchId =
-					branch.id === MAIN_BRANCH_ID
-						? null
-						: forkNodeId
-							? (this.nodes.get(forkNodeId)?.branchId ?? MAIN_BRANCH_ID)
-							: MAIN_BRANCH_ID;
+					ownerBranchId && ownerBranchId !== branch.id && this.branches.has(ownerBranchId)
+						? ownerBranchId
+						: null;
 				return {
 					...branch,
 					forkNodeId,
@@ -583,45 +579,68 @@ export class PersistentHistory {
 		branchId: string,
 		apply: (bounds: Rect, pixels: Uint8Array) => void | Promise<void>
 	) {
-		if (branchId === MAIN_BRANCH_ID) throw new Error('The main branch cannot be deleted');
-		if (!this.branches.has(branchId)) throw new Error('Unknown history branch');
+		const deletedBranch = this.branches.get(branchId);
+		if (!deletedBranch) throw new Error('Unknown history branch');
 
-		const parentOf = (branch: HistoryBranch) => {
-			const path = this.getPath(branch.id);
-			const firstOwnNode = path.find((node) => node.branchId === branch.id);
-			const forkNodeId = firstOwnNode?.parentId ?? branch.tipNodeId;
-			return forkNodeId ? (this.nodes.get(forkNodeId)?.branchId ?? MAIN_BRANCH_ID) : MAIN_BRANCH_ID;
-		};
-		const deletedBranchIds = new Set([branchId]);
-		let changed = true;
-		while (changed) {
-			changed = false;
-			for (const branch of this.branches.values()) {
-				if (!deletedBranchIds.has(branch.id) && deletedBranchIds.has(parentOf(branch))) {
-					deletedBranchIds.add(branch.id);
-					changed = true;
-				}
+		const deletedPath = this.getPath(branchId);
+		const remainingBranches = [...this.branches.values()].filter(
+			(branch) => branch.id !== branchId
+		);
+		let replacement: HistoryBranch | null = null;
+		if (remainingBranches.length === 0) {
+			const now = Date.now();
+			replacement = {
+				id: crypto.randomUUID(),
+				name: 'Main',
+				tipNodeId: null,
+				createdAt: now,
+				updatedAt: now
+			};
+			await this.transitionTo(null, apply, branchId);
+		} else if (this.project.activeBranchId === branchId) {
+			const deletedIds = deletedPath.map((node) => node.id);
+			const sharedLength = (branch: HistoryBranch) => {
+				const path = this.getPath(branch.id);
+				let index = 0;
+				while (index < deletedIds.length && path[index]?.id === deletedIds[index]) index++;
+				return index;
+			};
+			const fallback = remainingBranches.reduce((best, branch) =>
+				sharedLength(branch) > sharedLength(best) ? branch : best
+			);
+			await this.transitionTo(fallback.tipNodeId, apply, fallback.id);
+		}
+
+		const reachableNodeIds = new Set<string>();
+		for (const branch of remainingBranches) {
+			let nodeId = branch.tipNodeId;
+			while (nodeId && !reachableNodeIds.has(nodeId)) {
+				reachableNodeIds.add(nodeId);
+				nodeId = this.nodes.get(nodeId)?.parentId ?? null;
 			}
 		}
+		const deletedNodeIds = [...this.nodes.keys()].filter((id) => !reachableNodeIds.has(id));
+		const nextProject = replacement
+			? {
+					...this.project,
+					activeBranchId: replacement.id,
+					cursorNodeId: null
+				}
+			: this.project;
 
-		if (deletedBranchIds.has(this.project.activeBranchId)) {
-			const main = this.branches.get(MAIN_BRANCH_ID);
-			if (!main) throw new Error('Main history branch is missing');
-			await this.transitionTo(main.tipNodeId, apply, MAIN_BRANCH_ID);
-		}
-
-		const deletedNodeIds = [...this.nodes.values()]
-			.filter((node) => deletedBranchIds.has(node.branchId))
-			.map((node) => node.id);
-		const tx = this.db.transaction(['nodes', 'patches', 'branches'], 'readwrite');
+		const tx = this.db.transaction(['project', 'nodes', 'patches', 'branches'], 'readwrite');
+		tx.objectStore('project').put(nextProject);
+		tx.objectStore('branches').delete(branchId);
+		if (replacement) tx.objectStore('branches').put(replacement);
 		for (const id of deletedNodeIds) {
 			tx.objectStore('nodes').delete(id);
 			tx.objectStore('patches').delete(id);
 		}
-		for (const id of deletedBranchIds) tx.objectStore('branches').delete(id);
 		await transactionDone(tx);
+		this.project = nextProject;
 		for (const id of deletedNodeIds) this.nodes.delete(id);
-		for (const id of deletedBranchIds) this.branches.delete(id);
+		this.branches.delete(branchId);
+		if (replacement) this.branches.set(replacement.id, replacement);
 	}
 
 	async reset(width: number, height: number, baseline: Uint8Array) {

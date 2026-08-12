@@ -278,7 +278,7 @@
 	}
 
 	function deleteSelected() {
-		if (!api || !selectedIsBranchTip || !selectedBranch || selectedBranch.id === 'main') return;
+		if (!api || !selectedIsBranchTip || !selectedBranch) return;
 		if (!deleteConfirm) {
 			deleteConfirm = true;
 			return;
@@ -665,7 +665,7 @@
 			>
 				Export
 			</button>
-			{#if selectedIsBranchTip && selectedBranch?.id !== 'main'}
+			{#if selectedIsBranchTip}
 				<button
 					type="button"
 					class="rounded-md px-3 py-2 text-xs
