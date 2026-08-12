@@ -20,8 +20,9 @@ export const HOT_PIXEL_BUDGET = 32_000_000;
 /**
  * Krita Creamy Alpha Darken flow — how fast dabs fill toward the stroke
  * opacity cap (see KoCompositeOpAlphaDarken + KoAlphaDarkenParamsWrapperCreamy).
+ * Kept low so the soft tip builds a gentle wash instead of a hard blot.
  */
-export const AIRBRUSH_FLOW = 0.4;
+export const AIRBRUSH_FLOW = 0.12;
 
 export const GRID_BG = [0.11, 0.11, 0.114] as const;
 export const GRID_LINE = [0.18, 0.18, 0.185] as const;

@@ -4,7 +4,13 @@
 	import SliderSize from '$lib/SliderSize.svelte';
 	import SliderOpacity from '$lib/SliderOpacity.svelte';
 	import SliderSpacing from '$lib/SliderSpacing.svelte';
-	import { type BrushKind, DEFAULT_DOC_W, DEFAULT_DOC_H } from '$lib/gpuPaint';
+	import {
+		type BrushKind,
+		type LassoMode,
+		type LassoOptions,
+		DEFAULT_DOC_W,
+		DEFAULT_DOC_H
+	} from '$lib/gpuPaint';
 
 	const BRUSHES: {
 		id: BrushKind;
@@ -12,8 +18,15 @@
 		spacing: number;
 	}[] = [
 		{ id: 'pen', label: 'Pen', spacing: 0.005 },
-		{ id: 'airbrush', label: 'Airbrush', spacing: 0.08 },
-		{ id: 'lasso', label: 'Lasso', spacing: 0.02 }
+		{ id: 'airbrush', label: 'Airbrush', spacing: 0.12 },
+		{ id: 'lasso', label: 'Lasso', spacing: 0.02 },
+		{ id: 'fan', label: 'Fan', spacing: 0.02 },
+		{ id: 'fanFade', label: 'Fan Fade', spacing: 0.02 }
+	];
+
+	const LASSO_MODES: { id: LassoMode; label: string }[] = [
+		{ id: 'fill', label: 'Fill' },
+		{ id: 'pull', label: 'Pull-Shape' }
 	];
 
 	let color = $state('#1a6cff');
@@ -21,6 +34,10 @@
 	let opacity = $state(1);
 	let spacing = $state(0.005);
 	let brush = $state<BrushKind>('pen');
+	let lassoOptions = $state<LassoOptions>({
+		mode: 'fill',
+		splat: false
+	});
 	let pressureSize = $state(false);
 	let pressureOpacity = $state(true);
 	let canUndo = $state(false);
@@ -153,6 +170,7 @@
 	bind:opacity
 	bind:spacing
 	bind:brush
+	bind:lassoOptions
 	bind:pressureSize
 	bind:pressureOpacity
 	bind:canUndo
@@ -198,7 +216,7 @@
 					<circle cx="16" cy="16" r="1.5" />
 				</svg>
 			</button>
-			{#if brush !== 'lasso'}
+			{#if brush === 'pen' || brush === 'airbrush'}
 				<SliderSize bind:value={size} {zoom} />
 			{/if}
 			<SliderOpacity bind:value={opacity} />
@@ -209,7 +227,7 @@
 <!-- Tool strip -->
 <div class="fixed top-4 left-4 z-50 flex flex-col gap-1.5">
 	{#if !resizeMode}
-		<div class="flex gap-1" role="group" aria-label="Brush">
+		<div class="flex flex-wrap gap-1" role="group" aria-label="Brush">
 			{#each BRUSHES as b (b.id)}
 				<button
 					type="button"
@@ -254,7 +272,7 @@
 							<path d="M18 5v.01" />
 							<path d="M19 8v.01" />
 						</svg>
-					{:else}
+					{:else if b.id === 'lasso'}
 						<svg
 							xmlns="http://www.w3.org/2000/svg"
 							viewBox="0 0 24 24"
@@ -274,12 +292,118 @@
 								d="M5 18a4 4 0 0 0 4-4 1 1 0 0 1 1.5-.9 5.4 5.4 0 0 0 2.5.9 4 4 0 0 0 4-4"
 							/>
 						</svg>
+					{:else if b.id === 'fan'}
+						<svg
+							xmlns="http://www.w3.org/2000/svg"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							class="size-4"
+							aria-hidden="true"
+						>
+							<path d="M12 20V4" />
+							<path d="M12 20L5 8" />
+							<path d="M12 20L19 8" />
+							<path d="M12 20L8 6" />
+							<path d="M12 20L16 6" />
+						</svg>
+					{:else}
+						<svg
+							xmlns="http://www.w3.org/2000/svg"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							class="size-4"
+							aria-hidden="true"
+						>
+							<path d="M12 20V4" opacity="0.35" />
+							<path d="M12 20L5 8" />
+							<path d="M12 20L19 8" />
+							<path d="M12 20L8 6" opacity="0.55" />
+							<path d="M12 20L16 6" opacity="0.55" />
+						</svg>
 					{/if}
 				</button>
 			{/each}
 		</div>
 
-		{#if brush !== 'lasso'}
+		{#if brush === 'lasso'}
+			<div class="flex gap-1" role="group" aria-label="Lasso mode">
+				{#each LASSO_MODES as m (m.id)}
+					<button
+						type="button"
+						class={lassoOptions.mode === m.id ? toolBtnOn : toolBtn}
+						aria-label={m.label}
+						title={m.label}
+						aria-pressed={lassoOptions.mode === m.id}
+						onclick={() => (lassoOptions = { ...lassoOptions, mode: m.id })}
+					>
+						{#if m.id === 'fill'}
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								class="size-4"
+								aria-hidden="true"
+							>
+								<path d="M4 8c2-4 6-5 8-5s6 1 8 5c-1 5-4 11-8 13-4-2-7-8-8-13z" />
+								<path d="M8 10h8" opacity="0.45" />
+							</svg>
+						{:else}
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								class="size-4"
+								aria-hidden="true"
+							>
+								<path d="M5 19c2-3 3-7 2-10 3 1 6 0 8-2 0 4 1 8 4 11" />
+								<path d="M8 8c1.2-1.5 2-3.5 1.5-5" opacity="0.55" />
+								<path d="M14 7c1-1.2 2.2-2.2 3.5-2.5" opacity="0.55" />
+							</svg>
+						{/if}
+					</button>
+				{/each}
+				<button
+					type="button"
+					class={lassoOptions.splat ? toolBtnOn : toolBtn}
+					aria-label="Splat"
+					title="Splat"
+					aria-pressed={lassoOptions.splat}
+					onclick={() => (lassoOptions = { ...lassoOptions, splat: !lassoOptions.splat })}
+				>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						class="size-4"
+						aria-hidden="true"
+					>
+						<path d="M12 3c2 3 1 5-1 7 3 0 5 2 6 5-3 0-5 1-7 3-1-3-3-5-6-6 2-2 4-4 3-7 2 1 3 2 5-2z" />
+						<circle cx="18.5" cy="6.5" r="1" fill="currentColor" stroke="none" />
+						<circle cx="5.5" cy="16.5" r="1" fill="currentColor" stroke="none" />
+					</svg>
+				</button>
+			</div>
+		{:else if brush === 'pen' || brush === 'airbrush'}
 			<div class="flex gap-1" role="group" aria-label="Pressure">
 				<button
 					type="button"

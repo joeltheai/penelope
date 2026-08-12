@@ -133,10 +133,11 @@ export function createPaintPipelines(deps: {
 			const dst = std.textureSample(strokeViewSlot.$, linearSamp.$, input.docUv);
 			const dstA = dst.a;
 
+			// Soft gaussian-ish tip: dense center, long feathered falloff.
 			const delta = input.tipUv - d.vec2f(0.5);
 			const r = std.length(delta) * 2;
-			const t = std.max(1 - r, 0);
-			const msk = t * t * (3 - 2 * t);
+			const inside = std.select(0, 1, r < 1);
+			const msk = std.exp(-r * r * 3.2) * inside;
 
 			const opacity = input.opacityPressure;
 			const flow = u.flow;

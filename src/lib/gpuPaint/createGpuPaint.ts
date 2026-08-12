@@ -19,10 +19,15 @@ import {
 	blendAverageOpacity,
 	makeHardBrushPixels,
 	parseColor,
-	rasterizePolygonEvenOdd,
 	spacingFor,
 	webGpuUnavailableMessage
 } from './cpu';
+import {
+	createLassoEngine,
+	DEFAULT_LASSO_OPTIONS,
+	type LassoEngine
+} from './lasso';
+import { createFanEngine, type FanEngine, type FanKind } from './fan';
 import {
 	AirbrushUniforms,
 	CompositeUniforms,
@@ -32,7 +37,11 @@ import {
 } from './schemas';
 import { createPaintPipelines } from './pipelines';
 import { createStrokeBoundsTracker } from './strokeBounds';
-import type { BrushKind, GpuPaint, Rect, ViewState } from './types';
+import type { BrushKind, GpuPaint, LassoOptions, Rect, ViewState } from './types';
+
+function isFanBrush(b: BrushKind): b is FanKind {
+	return b === 'fan' || b === 'fanFade';
+}
 
 export async function createGpuPaint(
 	canvas: HTMLCanvasElement,
@@ -159,8 +168,9 @@ export async function createGpuPaint(
 	let currentBrush: BrushKind = 'pen';
 	/** Krita KisPainter::averageOpacity EMA for Alpha Darken. */
 	let averageOpacity = 0;
-	const lassoPoints: { x: number; y: number }[] = [];
-	const LASSO_MIN_DIST = 2.5;
+	let lassoOpts: LassoOptions = { ...DEFAULT_LASSO_OPTIONS };
+	const lasso: LassoEngine = createLassoEngine(docW, docH);
+	const fan: FanEngine = createFanEngine(docW, docH, 'fan');
 
 	type PatchTex = ReturnType<typeof createPatchTex>;
 	/** One undoable stroke: dirty-rect before/after patches. */
@@ -326,18 +336,50 @@ export async function createGpuPaint(
 		stampCount = 0;
 	}
 
-	function fillLassoIntoStroke(color: string): boolean {
-		if (lassoPoints.length < 3) return false;
-		const bounds = strokeBounds.finalize(docW, docH);
-		if (!bounds) return false;
+	/** Staging texture reused across path-tool dirty uploads (grows as needed). */
+	let lassoStage: PatchTex | null = null;
+	let lassoStageW = 0;
+	let lassoStageH = 0;
 
-		const [r, g, b] = parseColor(color);
-		const pixels = rasterizePolygonEvenOdd(lassoPoints, bounds, r, g, b);
-		const patch = createPatchTex(bounds.w, bounds.h);
-		patch.write(pixels);
-		blitRect(patch, strokeTex, { x: 0, y: 0 }, { x: bounds.x, y: bounds.y }, bounds);
-		patch.destroy();
-		return true;
+	function uploadPathDirty(result: { pixels: Uint8Array; bounds: Rect }) {
+		const { bounds, pixels } = result;
+		if (!lassoStage || lassoStageW < bounds.w || lassoStageH < bounds.h) {
+			lassoStage?.destroy();
+			lassoStageW = Math.max(bounds.w, lassoStageW);
+			lassoStageH = Math.max(bounds.h, lassoStageH);
+			// Grow with headroom so we don't thrash on small expansions.
+			lassoStageW = Math.min(docW, Math.max(lassoStageW, Math.ceil(bounds.w * 1.25)));
+			lassoStageH = Math.min(docH, Math.max(lassoStageH, Math.ceil(bounds.h * 1.25)));
+			lassoStage = createPatchTex(lassoStageW, lassoStageH);
+		}
+		// write() expects tightly packed rows matching the texture width.
+		// Copy into a full-stage buffer when dirty rect is smaller than stage.
+		if (bounds.w === lassoStageW && bounds.h <= lassoStageH) {
+			if (bounds.h === lassoStageH) {
+				lassoStage.write(pixels);
+			} else {
+				const full = new Uint8Array(lassoStageW * lassoStageH * 4);
+				full.set(pixels);
+				lassoStage.write(full);
+			}
+		} else {
+			const full = new Uint8Array(lassoStageW * lassoStageH * 4);
+			for (let row = 0; row < bounds.h; row++) {
+				full.set(
+					pixels.subarray(row * bounds.w * 4, (row + 1) * bounds.w * 4),
+					row * lassoStageW * 4
+				);
+			}
+			lassoStage.write(full);
+		}
+		blitRect(
+			lassoStage,
+			strokeTex,
+			{ x: 0, y: 0 },
+			{ x: bounds.x, y: bounds.y },
+			{ w: bounds.w, h: bounds.h }
+		);
+		strokeBounds.expand(bounds.x + bounds.w * 0.5, bounds.y + bounds.h * 0.5, Math.max(bounds.w, bounds.h) * 0.5);
 	}
 
 	function compositeStroke(opacity: number) {
@@ -448,7 +490,14 @@ export async function createGpuPaint(
 			stampCount = 0;
 			lastStamp = null;
 			averageOpacity = 0;
-			lassoPoints.length = 0;
+			lasso.reset();
+			lasso.resize(nextW, nextH);
+			fan.reset();
+			fan.resize(nextW, nextH);
+			lassoStage?.destroy();
+			lassoStage = null;
+			lassoStageW = 0;
+			lassoStageH = 0;
 			strokeBounds.reset();
 			while (undoStack.length > 0) disposeEntry(undoStack.pop()!);
 			while (redoStack.length > 0) disposeEntry(redoStack.pop()!);
@@ -511,8 +560,16 @@ export async function createGpuPaint(
 		setBrush(brush: BrushKind) {
 			if (destroyed) return;
 			currentBrush = brush;
-			// Pen / lasso use the hard tip texture; airbrush is procedural.
+			// Pen / path tools use the hard tip texture; airbrush is procedural.
 			if (brush !== 'airbrush') brushTex.write(hardTipPixels);
+			if (isFanBrush(brush)) fan.setKind(brush);
+		},
+
+		setLassoOptions(opts: Partial<LassoOptions>) {
+			if (destroyed) return;
+			if (opts.mode !== undefined) lassoOpts.mode = opts.mode;
+			if (opts.splat !== undefined) lassoOpts.splat = opts.splat;
+			lasso.setOptions(lassoOpts);
 		},
 
 		beginStroke() {
@@ -522,7 +579,13 @@ export async function createGpuPaint(
 			lastStamp = null;
 			stampCount = 0;
 			averageOpacity = 0;
-			lassoPoints.length = 0;
+			if (currentBrush === 'lasso') {
+				lasso.setOptions(lassoOpts);
+				lasso.begin(lastColor);
+			} else if (isFanBrush(currentBrush)) {
+				fan.setKind(currentBrush);
+				fan.begin(lastColor);
+			}
 			strokeBounds.reset();
 		},
 
@@ -531,14 +594,30 @@ export async function createGpuPaint(
 
 			if (currentBrush === 'lasso') {
 				stampCount = 0;
-				strokeTex.clear();
-				const filled = fillLassoIntoStroke(lastColor);
-				lassoPoints.length = 0;
-				if (!filled) {
+				const flushed = lasso.flush();
+				if (flushed) uploadPathDirty(flushed);
+				const ok = lasso.hasDrawable();
+				const final = lasso.finalizeBounds();
+				lasso.reset();
+				if (!ok || !final) {
 					lastStamp = null;
 					strokeBounds.reset();
 					return;
 				}
+				strokeBounds.expand(final.x, final.y, 0);
+				strokeBounds.expand(final.x + final.w, final.y + final.h, 0);
+			} else if (isFanBrush(currentBrush)) {
+				stampCount = 0;
+				const ok = fan.hasDrawable();
+				const final = fan.finalizeBounds();
+				fan.reset();
+				if (!ok || !final) {
+					lastStamp = null;
+					strokeBounds.reset();
+					return;
+				}
+				strokeBounds.expand(final.x, final.y, 0);
+				strokeBounds.expand(final.x + final.w, final.y + final.h, 0);
 			} else {
 				paintStampsToStroke(lastColor);
 			}
@@ -562,7 +641,8 @@ export async function createGpuPaint(
 			lastStamp = null;
 			stampCount = 0;
 			averageOpacity = 0;
-			lassoPoints.length = 0;
+			lasso.reset();
+			fan.reset();
 			strokeBounds.reset();
 		},
 
@@ -571,7 +651,8 @@ export async function createGpuPaint(
 			stampCount = 0;
 			lastStamp = null;
 			averageOpacity = 0;
-			lassoPoints.length = 0;
+			lasso.reset();
+			fan.reset();
 			strokeTex.clear();
 			strokeTexB.clear();
 			strokeBounds.reset();
@@ -617,38 +698,14 @@ export async function createGpuPaint(
 			const opacP = Math.min(1, Math.max(0, opacityPressure));
 
 			if (currentBrush === 'lasso') {
-				const last = lassoPoints[lassoPoints.length - 1];
-				if (!last || Math.hypot(x - last.x, y - last.y) >= LASSO_MIN_DIST) {
-					lassoPoints.push({ x, y });
-					strokeBounds.expand(x, y, 1);
-				}
-				// Fixed-size dotted outline preview (ignore brush size & pressure).
-				const outlineDiameter = 5;
-				const spacing = spacingFor(outlineDiameter, 2.5);
-				const outlineOpac = 0.85;
-				if (!lastStamp) {
-					queueStamp(x, y, outlineDiameter, 1, outlineOpac);
-					lastStamp = { x, y, sizePressure: 1, opacityPressure: outlineOpac };
-					if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
-					return;
-				}
-				const dx = x - lastStamp.x;
-				const dy = y - lastStamp.y;
-				const dist = Math.hypot(dx, dy);
-				if (dist < spacing) return;
-				const steps = Math.floor(dist / spacing);
-				for (let i = 1; i <= steps; i++) {
-					const t = i / steps;
-					queueStamp(
-						lastStamp.x + dx * t,
-						lastStamp.y + dy * t,
-						outlineDiameter,
-						1,
-						outlineOpac
-					);
-					if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
-				}
-				lastStamp = { x, y, sizePressure: 1, opacityPressure: outlineOpac };
+				const dirty = lasso.sample(x, y, color);
+				if (dirty) uploadPathDirty(dirty);
+				return;
+			}
+
+			if (isFanBrush(currentBrush)) {
+				const dirty = fan.sample(x, y, color);
+				if (dirty) uploadPathDirty(dirty);
 				return;
 			}
 
@@ -724,6 +781,10 @@ export async function createGpuPaint(
 
 		destroy() {
 			destroyed = true;
+			lasso.reset();
+			fan.reset();
+			lassoStage?.destroy();
+			lassoStage = null;
 			for (const e of undoStack) disposeEntry(e);
 			for (const e of redoStack) disposeEntry(e);
 			undoStack.length = 0;

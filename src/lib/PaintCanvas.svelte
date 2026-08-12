@@ -3,7 +3,8 @@
 		createGpuPaint,
 		sanitizeDocSize,
 		type BrushKind,
-		type GpuPaint
+		type GpuPaint,
+		type LassoOptions
 	} from '$lib/gpuPaint';
 	import {
 		fitDocumentZoom,
@@ -33,6 +34,10 @@
 		opacity = $bindable(1),
 		spacing = $bindable(0.005),
 		brush = $bindable('pen' as BrushKind),
+		lassoOptions = $bindable({
+			mode: 'fill',
+			splat: false
+		} as LassoOptions),
 		pressureSize = $bindable(false),
 		pressureOpacity = $bindable(true),
 		canUndo = $bindable(false),
@@ -50,6 +55,7 @@
 		opacity?: number;
 		spacing?: number;
 		brush?: BrushKind;
+		lassoOptions?: LassoOptions;
 		pressureSize?: boolean;
 		pressureOpacity?: boolean;
 		canUndo?: boolean;
@@ -379,6 +385,7 @@
 
 		function beginStroke() {
 			gpu?.setBrush(brush);
+			gpu?.setLassoOptions(lassoOptions);
 			gpu?.beginStroke();
 			strokeActive = true;
 			strokeStartedAt = performance.now();
@@ -775,6 +782,7 @@
 				docW = painter.docW;
 				docH = painter.docH;
 				gpu.setBrush(untrack(() => brush));
+				gpu.setLassoOptions(untrack(() => lassoOptions));
 				gpuError = null;
 				undoFn = runUndo;
 				redoFn = runRedo;

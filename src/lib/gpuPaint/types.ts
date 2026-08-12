@@ -8,10 +8,18 @@ export type ViewState = {
 	flipX: number;
 };
 
-/** Stamp brushes (pen / airbrush) vs path-fill tool (lasso). */
-export type BrushKind = 'pen' | 'airbrush' | 'lasso';
+/** Stamp brushes vs path tools. */
+export type BrushKind = 'pen' | 'airbrush' | 'lasso' | 'fan' | 'fanFade';
 
 export type Rect = { x: number; y: number; w: number; h: number };
+
+export type LassoMode = 'fill' | 'pull';
+
+export type LassoOptions = {
+	mode: LassoMode;
+	/** Jagged / irregular path (fill) or spikier blobs (pull). */
+	splat: boolean;
+};
 
 export type GpuPaint = {
 	docW: number;
@@ -28,6 +36,7 @@ export type GpuPaint = {
 		opts?: { cropX?: number; cropY?: number }
 	) => Promise<boolean>;
 	setBrush: (brush: BrushKind) => void;
+	setLassoOptions: (opts: Partial<LassoOptions>) => void;
 	beginStroke: () => void;
 	endStroke: (opacity: number) => void;
 	/** Discard in-progress stroke without compositing or undo entry. */
