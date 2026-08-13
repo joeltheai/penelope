@@ -15,7 +15,10 @@ export function createPaintPipelines(deps: {
 	format: GPUTextureFormat;
 	stampLayout: any;
 	vertexBuf: any;
+	fanLayout: any;
+	fanVertexBuf: any;
 	strokeUniforms: any;
+	fanUniforms: any;
 	airbrushUniforms: any;
 	compositeUniforms: any;
 	presentUniforms: any;
@@ -31,7 +34,10 @@ export function createPaintPipelines(deps: {
 		format,
 		stampLayout,
 		vertexBuf,
+		fanLayout,
+		fanVertexBuf,
 		strokeUniforms,
+		fanUniforms,
 		airbrushUniforms,
 		compositeUniforms,
 		presentUniforms,
@@ -41,6 +47,24 @@ export function createPaintPipelines(deps: {
 		strokeViewSlot,
 		views
 	} = deps;
+
+	const fanVertex = tgpu.vertexFn({
+		in: { pos: d.vec2f, opacity: d.f32 },
+		out: { position: d.builtin.position, opacity: d.f32 }
+	})((input) => {
+		'use gpu';
+		const clip = (input.pos / fanUniforms.$.resolution) * d.vec2f(2, -2) + d.vec2f(-1, 1);
+		return { position: d.vec4f(clip, 0, 1), opacity: input.opacity };
+	});
+
+	const fanFragment = tgpu.fragmentFn({
+		in: { opacity: d.f32 },
+		out: d.vec4f
+	})((input) => {
+		'use gpu';
+		const alpha = input.opacity;
+		return d.vec4f(d.vec3f(fanUniforms.$.color) * alpha, alpha);
+	});
 
 	// Pipelines that sample textures capture views at shell creation time —
 	// call rebuildDocSamplePipelines() after views.docView/strokeView change.
@@ -291,9 +315,27 @@ export function createPaintPipelines(deps: {
 		})
 		.with(stampLayout, vertexBuf);
 
+	const fanPipeline = root
+		.createRenderPipeline({
+			attribs: { ...fanLayout.attrib },
+			vertex: fanVertex,
+			fragment: fanFragment,
+			targets: {
+				format: 'rgba8unorm',
+				// A repeated sweep keeps the same falloff instead of accumulating opacity.
+				blend: {
+					color: { srcFactor: 'one', dstFactor: 'one', operation: 'max' },
+					alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'max' }
+				}
+			},
+			primitive: { topology: 'triangle-list' }
+		})
+		.with(fanLayout, fanVertexBuf);
+
 
 	return {
 		strokeWashPipeline,
+		fanPipeline,
 		get strokeAirbrushPipeline() {
 			return strokeAirbrushPipeline;
 		},

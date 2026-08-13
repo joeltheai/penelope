@@ -8,9 +8,19 @@ export const StampVertex = d.unstruct({
 	opacityPressure: d.float32
 });
 
+export const FanVertex = d.unstruct({
+	pos: d.float32x2,
+	opacity: d.float32
+});
+
 export const StrokeUniforms = d.struct({
 	resolution: d.vec2f,
 	color: d.vec4f
+});
+
+export const FanUniforms = d.struct({
+	resolution: d.vec2f,
+	color: d.vec3f
 });
 
 /** Krita-style Alpha Darken params for airbrush wash dabs. */

@@ -16,7 +16,6 @@ export const MAX_HISTORY = 50;
  * ~32M px ≈ 128 MB RGBA — enough for many small strokes, few full-canvas ones.
  */
 export const HOT_PIXEL_BUDGET = 32_000_000;
-
 /**
  * Krita Creamy Alpha Darken flow — how fast dabs fill toward the stroke
  * opacity cap (see KoCompositeOpAlphaDarken + KoAlphaDarkenParamsWrapperCreamy).

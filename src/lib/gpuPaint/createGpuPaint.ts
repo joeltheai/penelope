@@ -27,10 +27,12 @@ import {
 	DEFAULT_LASSO_OPTIONS,
 	type LassoEngine
 } from './lasso';
-import { createFanEngine, type FanEngine, type FanKind } from './fan';
+import { createFanEngine, type FanBatch, type FanEngine, type FanKind } from './fan';
 import {
 	AirbrushUniforms,
 	CompositeUniforms,
+	FanUniforms,
+	FanVertex,
 	PresentUniforms,
 	StampVertex,
 	StrokeUniforms
@@ -102,6 +104,10 @@ export async function createGpuPaint(
 		resolution: [docW, docH],
 		color: [0, 0, 0, 1]
 	});
+	const fanUniforms = root.createUniform(FanUniforms, {
+		resolution: [docW, docH],
+		color: [0, 0, 0]
+	});
 	const airbrushUniforms = root.createUniform(AirbrushUniforms, {
 		resolution: [docW, docH],
 		color: [0, 0, 0],
@@ -126,6 +132,10 @@ export async function createGpuPaint(
 		.createBuffer(stampLayout.schemaForCount(MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP))
 		.$usage('vertex');
 	const vertexCpu = new Float32Array(MAX_VERT_FLOATS);
+	const fanLayout = tgpu.vertexLayout(d.disarrayOf(FanVertex));
+	const fanVertexBuf = root
+		.createBuffer(fanLayout.schemaForCount(MAX_STAMPS_PER_FLUSH * 3))
+		.$usage('vertex');
 
 	const textureViews = { docView, strokeView };
 	const pipelines = createPaintPipelines({
@@ -133,7 +143,10 @@ export async function createGpuPaint(
 		format,
 		stampLayout,
 		vertexBuf: vertexBuf as any,
+		fanLayout,
+		fanVertexBuf,
 		strokeUniforms: strokeUniforms as any,
+		fanUniforms,
 		airbrushUniforms: airbrushUniforms as any,
 		compositeUniforms: compositeUniforms as any,
 		presentUniforms: presentUniforms as any,
@@ -287,6 +300,29 @@ export async function createGpuPaint(
 			})
 			.draw(stampCount * VERTS_PER_STAMP);
 		stampCount = 0;
+	}
+
+	function paintFanBatch(batch: FanBatch, color: string) {
+		fanVertexBuf.write(
+			batch.vertices.buffer.slice(
+				batch.vertices.byteOffset,
+				batch.vertices.byteOffset + batch.vertices.byteLength
+			) as ArrayBuffer
+		);
+		const [r, g, b] = parseColor(color);
+		fanUniforms.write({ resolution: [docW, docH], color: [r, g, b] });
+		pipelines.fanPipeline
+			.withColorAttachment({
+				view: strokeRenderView,
+				loadOp: 'load',
+				storeOp: 'store'
+			})
+			.draw(batch.vertexCount);
+		strokeBounds.expand(
+			batch.bounds.x + batch.bounds.w * 0.5,
+			batch.bounds.y + batch.bounds.h * 0.5,
+			Math.max(batch.bounds.w, batch.bounds.h) * 0.5
+		);
 	}
 
 	/** Sequential Krita Alpha Darken dabs (sample strokeTex → write B → blit back). */
@@ -630,6 +666,8 @@ export async function createGpuPaint(
 				strokeBounds.expand(final.x + final.w, final.y + final.h, 0);
 			} else if (isFanBrush(currentBrush)) {
 				stampCount = 0;
+				const flushed = fan.flush();
+				if (flushed) paintFanBatch(flushed, lastColor);
 				const ok = fan.hasDrawable();
 				const final = fan.finalizeBounds();
 				fan.reset();
@@ -758,7 +796,7 @@ export async function createGpuPaint(
 
 			if (isFanBrush(currentBrush)) {
 				const dirty = fan.sample(x, y, color);
-				if (dirty) uploadPathDirty(dirty);
+				if (dirty) paintFanBatch(dirty, color);
 				return;
 			}
 
@@ -795,6 +833,11 @@ export async function createGpuPaint(
 		},
 
 		flushStamps(color: string) {
+			if (isFanBrush(currentBrush)) {
+				const dirty = fan.flush();
+				if (dirty) paintFanBatch(dirty, color);
+				return;
+			}
 			paintStampsToStroke(color);
 		},
 
