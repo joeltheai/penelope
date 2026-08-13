@@ -141,6 +141,12 @@
 		spacingOpen = false;
 	}
 
+	function onBrushChange(event: Event) {
+		const id = (event.currentTarget as HTMLSelectElement).value as BrushKind;
+		const next = BRUSHES.find((item) => item.id === id);
+		if (next) selectBrush(next);
+	}
+
 	function toggleSpacing() {
 		spacingOpen = !spacingOpen;
 	}
@@ -161,6 +167,12 @@
 		'flex size-9 items-center justify-center rounded-md bg-[#2a2a2e] text-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.35)] transition hover:bg-[#34343a] hover:text-white/90 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-[#2a2a2e] disabled:hover:text-white/70';
 	const toolBtnOn =
 		'flex size-9 items-center justify-center rounded-md bg-[#4a4a52] text-white shadow-[inset_0_1px_2px_rgba(0,0,0,0.45),0_1px_0_rgba(255,255,255,0.06)]';
+	const settingBtn =
+		'flex h-7 items-center justify-center rounded bg-[#2a2a2e] px-2 text-[10px] font-medium whitespace-nowrap text-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.35)] transition hover:bg-[#34343a] hover:text-white/90';
+	const settingBtnOn =
+		'flex h-7 items-center justify-center rounded bg-[#4a4a52] px-2 text-[10px] font-medium whitespace-nowrap text-white shadow-[inset_0_1px_2px_rgba(0,0,0,0.45),0_1px_0_rgba(255,255,255,0.06)]';
+	const toolSelect =
+		'h-7 min-w-28 rounded border border-white/10 bg-[#2a2a2e] px-2 text-[11px] font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.35)] outline-none focus:border-white/30';
 </script>
 
 <svelte:window
@@ -234,279 +246,78 @@
 	{/if}
 {/if}
 
-<!-- Tool strip -->
-<div class="fixed top-4 left-4 z-50 flex flex-col gap-1.5">
+<!-- Tool controls -->
+<div class="fixed top-4 left-4 z-50 flex max-w-[calc(100vw-2rem)] flex-col gap-1.5">
 	{#if !resizeMode}
-		<div class="flex flex-wrap gap-1" role="group" aria-label="Brush">
+		<label class="flex items-center gap-1.5 rounded-md bg-[#1e1e22] p-1 text-[11px] text-white/60">
+			<span class="pl-1">Tool</span>
+			<select class={toolSelect} value={brush} aria-label="Tool" onchange={onBrushChange}>
 			{#each BRUSHES as b (b.id)}
-				<button
-					type="button"
-					class={brush === b.id ? toolBtnOn : toolBtn}
-					aria-label={b.label}
-					title={b.label}
-					aria-pressed={brush === b.id}
-					onclick={() => selectBrush(b)}
-				>
-					{#if b.id === 'pen'}
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="size-4"
-							aria-hidden="true"
-						>
-							<path d="M4 20l4.5-1.5L19 8l-3-3L5.5 15.5 4 20z" />
-							<path d="M14.5 6.5l3 3" />
-						</svg>
-					{:else if b.id === 'airbrush'}
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="size-4"
-							aria-hidden="true"
-						>
-							<path d="M12 14v7" />
-							<path d="M9 21h6" />
-							<path d="M12 14c2.5 0 4.5-2 4.5-4.5S14.5 5 12 5 7.5 7 7.5 9.5" />
-							<path d="M7.5 9.5c-1.5.3-2.5 1.5-2.5 3 0 1.7 1.3 3 3 3h4" />
-							<path d="M15 3v.01" />
-							<path d="M18 5v.01" />
-							<path d="M19 8v.01" />
-						</svg>
-					{:else if b.id === 'lasso'}
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="size-4"
-							aria-hidden="true"
-						>
-							<path d="M7 22a5 5 0 0 1-2-4" />
-							<path
-								d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8a7.9 7.9 0 0 1-1.5 4.7"
-							/>
-							<path
-								d="M5 18a4 4 0 0 0 4-4 1 1 0 0 1 1.5-.9 5.4 5.4 0 0 0 2.5.9 4 4 0 0 0 4-4"
-							/>
-						</svg>
-					{:else if b.id === 'fan'}
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="size-4"
-							aria-hidden="true"
-						>
-							<path d="M12 20V4" />
-							<path d="M12 20L5 8" />
-							<path d="M12 20L19 8" />
-							<path d="M12 20L8 6" />
-							<path d="M12 20L16 6" />
-						</svg>
-					{:else}
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="size-4"
-							aria-hidden="true"
-						>
-							<path d="M12 20V4" opacity="0.35" />
-							<path d="M12 20L5 8" />
-							<path d="M12 20L19 8" />
-							<path d="M12 20L8 6" opacity="0.55" />
-							<path d="M12 20L16 6" opacity="0.55" />
-						</svg>
-					{/if}
-				</button>
+				<option value={b.id}>{b.label}</option>
 			{/each}
-		</div>
+			</select>
+		</label>
 
 		{#if brush === 'lasso'}
-			<div class="flex gap-1" role="group" aria-label="Lasso mode">
-				{#each LASSO_MODES as m (m.id)}
-					<button
-						type="button"
-						class={lassoOptions.mode === m.id ? toolBtnOn : toolBtn}
-						aria-label={m.label}
-						title={m.label}
-						aria-pressed={lassoOptions.mode === m.id}
-						onclick={() => (lassoOptions = { ...lassoOptions, mode: m.id })}
+			<div class="flex flex-wrap gap-1" role="group" aria-label="Lasso settings">
+				<label class="flex items-center gap-1.5 rounded-md bg-[#1e1e22] p-1 text-[11px] text-white/60">
+					<span class="pl-1">Mode</span>
+					<select
+						class={toolSelect}
+						value={lassoOptions.mode}
+						aria-label="Lasso mode"
+						onchange={(event) =>
+							(lassoOptions = {
+								...lassoOptions,
+								mode: (event.currentTarget as HTMLSelectElement).value as LassoMode
+							})}
 					>
-						{#if m.id === 'fill'}
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								class="size-4"
-								aria-hidden="true"
-							>
-								<path d="M4 8c2-4 6-5 8-5s6 1 8 5c-1 5-4 11-8 13-4-2-7-8-8-13z" />
-								<path d="M8 10h8" opacity="0.45" />
-							</svg>
-						{:else}
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								class="size-4"
-								aria-hidden="true"
-							>
-								<path d="M5 19c2-3 3-7 2-10 3 1 6 0 8-2 0 4 1 8 4 11" />
-								<path d="M8 8c1.2-1.5 2-3.5 1.5-5" opacity="0.55" />
-								<path d="M14 7c1-1.2 2.2-2.2 3.5-2.5" opacity="0.55" />
-							</svg>
-						{/if}
-					</button>
-				{/each}
+						{#each LASSO_MODES as m (m.id)}
+							<option value={m.id}>{m.label}</option>
+						{/each}
+					</select>
+				</label>
 				<button
 					type="button"
-					class={lassoOptions.splat ? toolBtnOn : toolBtn}
-					aria-label="Splat"
-					title="Splat"
+					class={lassoOptions.splat ? settingBtnOn : settingBtn}
 					aria-pressed={lassoOptions.splat}
 					onclick={() => (lassoOptions = { ...lassoOptions, splat: !lassoOptions.splat })}
 				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						class="size-4"
-						aria-hidden="true"
-					>
-						<path d="M12 3c2 3 1 5-1 7 3 0 5 2 6 5-3 0-5 1-7 3-1-3-3-5-6-6 2-2 4-4 3-7 2 1 3 2 5-2z" />
-						<circle cx="18.5" cy="6.5" r="1" fill="currentColor" stroke="none" />
-						<circle cx="5.5" cy="16.5" r="1" fill="currentColor" stroke="none" />
-					</svg>
+					Splat: {lassoOptions.splat ? 'On' : 'Off'}
 				</button>
 			</div>
 		{:else if brush === 'pen' || brush === 'airbrush'}
-			<div class="flex gap-1" role="group" aria-label="Pressure">
+			<div class="flex flex-wrap gap-1" role="group" aria-label="Brush settings">
 				<button
 					type="button"
-					class={!pressureSize ? toolBtnOn : toolBtn}
+					class={pressureSize ? settingBtnOn : settingBtn}
 					aria-label={pressureSize ? 'Pressure controls size' : 'Fixed size'}
-					title={pressureSize ? 'Pressure → size' : 'Fixed size'}
-					aria-pressed={!pressureSize}
+					aria-pressed={pressureSize}
 					onclick={() => (pressureSize = !pressureSize)}
 				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						class="size-4"
-						aria-hidden="true"
-					>
-						{#if pressureSize}
-							<circle cx="12" cy="12" r="2.5" />
-							<circle cx="12" cy="12" r="6" opacity="0.55" />
-							<circle cx="12" cy="12" r="9.5" opacity="0.3" />
-						{:else}
-							<circle cx="12" cy="12" r="6" />
-						{/if}
-					</svg>
+					Size pressure: {pressureSize ? 'On' : 'Off'}
 				</button>
 				<button
 					type="button"
-					class={!pressureOpacity ? toolBtnOn : toolBtn}
+					class={pressureOpacity ? settingBtnOn : settingBtn}
 					aria-label={pressureOpacity ? 'Pressure controls opacity' : 'Fixed opacity'}
-					title={pressureOpacity ? 'Pressure → opacity' : 'Fixed opacity'}
-					aria-pressed={!pressureOpacity}
+					aria-pressed={pressureOpacity}
 					onclick={() => (pressureOpacity = !pressureOpacity)}
 				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						class="size-4"
-						aria-hidden="true"
-					>
-						<circle cx="12" cy="12" r="9" />
-						{#if pressureOpacity}
-							<path
-								d="M12 3a9 9 0 0 1 0 18Z"
-								fill="currentColor"
-								opacity="0.25"
-								stroke="none"
-							/>
-							<path
-								d="M12 7a5 5 0 0 1 0 10Z"
-								fill="currentColor"
-								opacity="0.55"
-								stroke="none"
-							/>
-						{:else}
-							<path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" opacity="0.4" stroke="none" />
-						{/if}
-					</svg>
+					Opacity pressure: {pressureOpacity ? 'On' : 'Off'}
 				</button>
 
 				<div class="relative" data-spacing-menu>
 					<button
 						type="button"
-						class={spacingOpen ? toolBtnOn : toolBtn}
+						class={spacingOpen ? settingBtnOn : settingBtn}
 						aria-label="Brush spacing"
 						title="Spacing"
 						aria-expanded={spacingOpen}
 						aria-haspopup="dialog"
 						onclick={toggleSpacing}
 					>
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="size-4"
-							aria-hidden="true"
-						>
-							<circle cx="5" cy="12" r="2.5" />
-							<circle cx="12" cy="12" r="2.5" />
-							<circle cx="19" cy="12" r="2.5" />
-						</svg>
+						Spacing
 					</button>
 
 					{#if spacingOpen}
@@ -522,7 +333,7 @@
 			</div>
 		{/if}
 
-		<div class="flex gap-1">
+		<div class="flex flex-wrap gap-1">
 			<button
 				type="button"
 				class={toolBtn}
