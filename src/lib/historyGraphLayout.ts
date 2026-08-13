@@ -31,12 +31,12 @@ export type HistoryGraphLayout = {
 	snapshotNodeIds: Array<string | null>;
 };
 
-const CARD_WIDTH = 150;
-const CARD_HEIGHT = 118;
-const COLUMN_GAP = 118;
-const ROW_GAP = 170;
-const LEFT = 54;
-const TOP = 50;
+const CARD_WIDTH = 92;
+const CARD_HEIGHT = 64;
+const COLUMN_GAP = 44;
+const ROW_GAP = 88;
+const LEFT = 30;
+const TOP = 30;
 
 function keyForNode(nodeId: string | null) {
 	return nodeId ?? '__root__';
@@ -151,7 +151,7 @@ export function layoutHistoryGraph(graph: HistoryGraphData): HistoryGraphLayout 
 			branch.tipNodeId === branch.forkNodeId ||
 			(branch.tipNodeId && divergenceIds.has(branch.tipNodeId))
 		) {
-			x = xForDepth(tipDepth) + CARD_WIDTH + 74;
+			x = xForDepth(tipDepth) + CARD_WIDTH + 28;
 		}
 		cards.push({
 			id: `tip:${branch.id}`,
@@ -241,11 +241,11 @@ export function layoutHistoryGraph(graph: HistoryGraphData): HistoryGraphLayout 
 	}
 
 	const width = Math.max(
-		900,
+		360,
 		...cards.map((card) => card.x + card.width + LEFT)
 	);
 	const height = Math.max(
-		460,
+		220,
 		...cards.map((card) => card.y + card.height + TOP)
 	);
 	const layout = {
@@ -269,7 +269,7 @@ export function refreshHistoryGraphEdges(layout: HistoryGraphLayout) {
 		const y1 = from.y + from.height / 2;
 		const x2 = to.x;
 		const y2 = to.y + to.height / 2;
-		const bend = Math.max(38, Math.abs(x2 - x1) * 0.46);
+		const bend = Math.max(22, Math.abs(x2 - x1) * 0.42);
 		edge.path = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
 		edge.labelX = (x1 + x2) / 2;
 		edge.labelY = (y1 + y2) / 2 - 7;

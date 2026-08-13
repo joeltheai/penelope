@@ -89,6 +89,7 @@ export type HistoryApi = {
 	switchBranch: (branchId: string) => Promise<void>;
 	renameBranch: (branchId: string, name: string) => Promise<void>;
 	deleteBranch: (branchId: string) => Promise<void>;
+	resetProject: () => Promise<void>;
 	getGraph: () => Promise<HistoryGraphData>;
 	getSnapshots: (nodeIds: Array<string | null>) => Promise<HistorySnapshot[]>;
 	openReplay: (

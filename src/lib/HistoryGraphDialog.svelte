@@ -17,7 +17,7 @@
 		onClose: () => void;
 	} = $props();
 
-	const POSITION_KEY = 'penelope.historyGraph.positions.v2';
+	const POSITION_KEY = 'penelope.historyGraph.positions.v3';
 	const PANEL_HEIGHT_KEY = 'penelope.historyGraph.replayPanelHeight';
 	let graph = $state<HistoryGraphData | null>(null);
 	let layout = $state<HistoryGraphLayout | null>(null);
@@ -36,6 +36,17 @@
 	let exportResolution = $state<720 | 1280 | 1920>(1280);
 	let renameText = $state('');
 	let deleteConfirm = $state(false);
+	let resetProjectConfirm = $state(false);
+	let viewport = $state<HTMLElement>();
+	let viewX = $state(0);
+	let viewY = $state(0);
+	let viewScale = $state(1);
+	const activePointers = new Map<number, { x: number; y: number }>();
+	let panPointerId: number | null = null;
+	let panStart = { x: 0, y: 0, viewX: 0, viewY: 0 };
+	let pinchStart:
+		| { distance: number; scale: number; graphX: number; graphY: number }
+		| null = null;
 	let loadGeneration = 0;
 	let replayLoadGeneration = 0;
 	let scrubRaf = 0;
@@ -149,6 +160,101 @@
 		void loadGraph();
 	}
 
+	function clampScale(scale: number) {
+		return Math.max(0.12, Math.min(4, scale));
+	}
+
+	function setScaleAround(nextScale: number, clientX: number, clientY: number) {
+		if (!viewport) return;
+		const rect = viewport.getBoundingClientRect();
+		const localX = clientX - rect.left;
+		const localY = clientY - rect.top;
+		const graphX = (localX - viewX) / viewScale;
+		const graphY = (localY - viewY) / viewScale;
+		viewScale = clampScale(nextScale);
+		viewX = localX - graphX * viewScale;
+		viewY = localY - graphY * viewScale;
+	}
+
+	function zoomBy(factor: number) {
+		if (!viewport) return;
+		const rect = viewport.getBoundingClientRect();
+		setScaleAround(viewScale * factor, rect.left + rect.width / 2, rect.top + rect.height / 2);
+	}
+
+	function fitGraph() {
+		if (!viewport || !layout) return;
+		const rect = viewport.getBoundingClientRect();
+		const padding = 36;
+		viewScale = clampScale(
+			Math.min(
+				(rect.width - padding * 2) / layout.width,
+				(rect.height - padding * 2) / layout.height,
+				1.4
+			)
+		);
+		viewX = (rect.width - layout.width * viewScale) / 2;
+		viewY = (rect.height - layout.height * viewScale) / 2;
+	}
+
+	function onViewportWheel(event: WheelEvent) {
+		event.preventDefault();
+		const factor = Math.exp(-event.deltaY * (event.ctrlKey ? 0.012 : 0.002));
+		setScaleAround(viewScale * factor, event.clientX, event.clientY);
+	}
+
+	function pointerPair() {
+		return [...activePointers.values()].slice(0, 2);
+	}
+
+	function onViewportPointerDown(event: PointerEvent) {
+		activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+		if (activePointers.size === 2) {
+			drag = null;
+			const [a, b] = pointerPair();
+			const rect = viewport!.getBoundingClientRect();
+			const centerX = (a.x + b.x) / 2 - rect.left;
+			const centerY = (a.y + b.y) / 2 - rect.top;
+			pinchStart = {
+				distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+				scale: viewScale,
+				graphX: (centerX - viewX) / viewScale,
+				graphY: (centerY - viewY) / viewScale
+			};
+			return;
+		}
+		if (!(event.target as Element).closest('button')) {
+			panPointerId = event.pointerId;
+			panStart = { x: event.clientX, y: event.clientY, viewX, viewY };
+			viewport?.setPointerCapture(event.pointerId);
+		}
+	}
+
+	function onViewportPointerMove(event: PointerEvent) {
+		if (!activePointers.has(event.pointerId)) return;
+		activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+		if (activePointers.size >= 2 && pinchStart && viewport) {
+			const [a, b] = pointerPair();
+			const rect = viewport.getBoundingClientRect();
+			const centerX = (a.x + b.x) / 2 - rect.left;
+			const centerY = (a.y + b.y) / 2 - rect.top;
+			viewScale = clampScale(
+				pinchStart.scale * (Math.hypot(a.x - b.x, a.y - b.y) / pinchStart.distance)
+			);
+			viewX = centerX - pinchStart.graphX * viewScale;
+			viewY = centerY - pinchStart.graphY * viewScale;
+		} else if (panPointerId === event.pointerId) {
+			viewX = panStart.viewX + event.clientX - panStart.x;
+			viewY = panStart.viewY + event.clientY - panStart.y;
+		}
+	}
+
+	function onViewportPointerUp(event: PointerEvent) {
+		activePointers.delete(event.pointerId);
+		if (panPointerId === event.pointerId) panPointerId = null;
+		if (activePointers.size < 2) pinchStart = null;
+	}
+
 	function onCardPointerDown(event: PointerEvent, card: HistoryGraphCard) {
 		if (event.button !== 0) return;
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -165,8 +271,9 @@
 
 	function onCardPointerMove(event: PointerEvent, card: HistoryGraphCard) {
 		if (!drag || drag.cardId !== card.id || drag.pointerId !== event.pointerId || !layout) return;
-		const dx = event.clientX - drag.startClientX;
-		const dy = event.clientY - drag.startClientY;
+		if (activePointers.size > 1) return;
+		const dx = (event.clientX - drag.startClientX) / viewScale;
+		const dy = (event.clientY - drag.startClientY) / viewScale;
 		if (Math.hypot(dx, dy) > 3) drag.moved = true;
 		if (!drag.moved) return;
 		card.x = Math.max(20, drag.startX + dx);
@@ -208,6 +315,7 @@
 			);
 			graph = nextGraph;
 			layout = nextLayout;
+			requestAnimationFrame(fitGraph);
 			const preferredBranch =
 				nextGraph.branches.find((branch) => branch.id === selectedBranchId) ??
 				nextGraph.branches.find((branch) => branch.active) ??
@@ -287,6 +395,27 @@
 		selectedBranchId = null;
 		selectedCardId = null;
 		void runAction(() => api.deleteBranch(branchId));
+	}
+
+	async function resetProject() {
+		if (!api) return;
+		if (!resetProjectConfirm) {
+			resetProjectConfirm = true;
+			return;
+		}
+		actionBusy = true;
+		error = null;
+		try {
+			closeReplay();
+			await api.resetProject();
+			localStorage.removeItem(POSITION_KEY);
+			resetProjectConfirm = false;
+			onClose();
+		} catch (caught) {
+			error = caught instanceof Error ? caught.message : 'Could not reset project';
+		} finally {
+			actionBusy = false;
+		}
 	}
 
 	async function prepareReplay(branchId: string, index: number) {
@@ -440,18 +569,25 @@
 	aria-modal="true"
 	aria-label="History graph"
 >
-	<header class="flex h-14 shrink-0 items-center gap-3 border-b border-white/10 px-4">
-		<div>
-			<h2 class="text-sm font-semibold">History</h2>
-			<p class="text-[11px] text-white/45">Select a node to replay it below</p>
-		</div>
+	<header class="flex h-12 shrink-0 items-center gap-2 border-b border-white/10 px-3">
+		<h2 class="text-sm font-semibold">History</h2>
 		<div class="ml-auto flex items-center gap-2">
 			<button
 				type="button"
-				class="rounded-md bg-white/5 px-3 py-1.5 text-xs text-white/60 hover:bg-white/10"
+				class="rounded-md bg-white/5 px-2.5 py-1.5 text-xs text-white/60 hover:bg-white/10"
 				onclick={resetLayout}
 			>
-				Reset layout
+				Auto layout
+			</button>
+			<button
+				type="button"
+				class="rounded-md px-2.5 py-1.5 text-xs {resetProjectConfirm
+					? 'bg-red-500 text-white'
+					: 'bg-red-500/10 text-red-300 hover:bg-red-500/20'}"
+				disabled={actionBusy || historyState.busy}
+				onclick={resetProject}
+			>
+				{resetProjectConfirm ? 'Confirm delete all' : 'Delete project'}
 			</button>
 			<button
 				type="button"
@@ -466,13 +602,30 @@
 		</div>
 	</header>
 
-	<section class="relative min-h-0 flex-1 overflow-auto bg-[#16161a]">
+	<section
+		class="relative min-h-0 flex-1 cursor-grab touch-none overflow-hidden bg-[#16161a] active:cursor-grabbing"
+		role="application"
+		aria-label="History graph. Drag to pan and pinch or scroll to zoom."
+		bind:this={viewport}
+		onwheel={onViewportWheel}
+		onpointerdown={onViewportPointerDown}
+		onpointermove={onViewportPointerMove}
+		onpointerup={onViewportPointerUp}
+		onpointercancel={onViewportPointerUp}
+	>
 		{#if loading}
 			<div class="absolute inset-0 grid place-items-center text-sm text-white/45">
 				Building history snapshots…
 			</div>
 		{:else if layout}
-			<div class="relative" style:width={`${layout.width}px`} style:height={`${layout.height}px`}>
+			<div
+				data-graph-surface
+				class="absolute top-0 left-0"
+				style:width={`${layout.width}px`}
+				style:height={`${layout.height}px`}
+				style:transform={`translate(${viewX}px, ${viewY}px) scale(${viewScale})`}
+				style:transform-origin="0 0"
+			>
 				<svg
 					class="pointer-events-none absolute inset-0 overflow-visible"
 					width={layout.width}
@@ -495,11 +648,14 @@
 
 				{#each layout.cards as card (card.id)}
 					<button
+						data-graph-card
 						type="button"
-						class="absolute cursor-move touch-none overflow-hidden rounded-lg border bg-[#24242a] text-left shadow-lg
+						class="absolute cursor-move touch-none overflow-hidden rounded-md border bg-[#24242a] text-left shadow-md
 							{selectedCardId === card.id
-								? 'border-blue-400 ring-2 ring-blue-400/20'
+								? 'border-blue-400 ring-1 ring-blue-400/30'
 								: 'border-white/10 hover:border-white/30'}"
+						aria-label={`${card.title}, ${card.subtitle}`}
+						title={`${card.title} · ${card.subtitle}`}
 						style:left={`${card.x}px`}
 						style:top={`${card.y}px`}
 						style:width={`${card.width}px`}
@@ -510,7 +666,7 @@
 						onpointercancel={(event) => onCardPointerUp(event, card)}
 						onclick={() => selectCard(card)}
 					>
-						<div class="h-[82px] bg-white/5">
+						<div class="absolute inset-0 bg-white/5">
 							{#if snapshotUrls[snapshotKey(card.nodeId)]}
 								<img
 									class="h-full w-full object-contain"
@@ -520,24 +676,40 @@
 								/>
 							{/if}
 						</div>
-						<div class="flex h-9 items-center gap-2 px-2">
-							<span
-								class="size-1.5 shrink-0 rounded-full
+						<span
+							class="absolute right-1.5 bottom-1.5 size-2 rounded-full border border-black/40 shadow
 									{card.kind === 'divergence'
 										? 'bg-amber-300'
 										: card.kind === 'tip'
 											? 'bg-blue-400'
 											: 'bg-white/35'}"
-							></span>
-							<div class="min-w-0">
-								<div class="truncate text-[11px] font-medium">{card.title}</div>
-								<div class="truncate text-[9px] text-white/40">{card.subtitle}</div>
-							</div>
-						</div>
+						></span>
 					</button>
 				{/each}
 			</div>
 		{/if}
+
+		<div
+			class="absolute right-3 bottom-3 flex overflow-hidden rounded-md border border-white/10 bg-[#24242a]/95 shadow-lg"
+		>
+			<button
+				class="grid size-8 place-items-center text-sm hover:bg-white/10"
+				type="button"
+				aria-label="Zoom out"
+				onclick={() => zoomBy(0.8)}
+			>−</button>
+			<button
+				class="border-x border-white/10 px-2.5 text-[10px] text-white/55 hover:bg-white/10"
+				type="button"
+				onclick={fitGraph}
+			>Fit</button>
+			<button
+				class="grid size-8 place-items-center text-sm hover:bg-white/10"
+				type="button"
+				aria-label="Zoom in"
+				onclick={() => zoomBy(1.25)}
+			>+</button>
+		</div>
 	</section>
 
 	<footer

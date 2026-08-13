@@ -506,6 +506,16 @@
 			});
 		}
 
+		function resetHistoryProject() {
+			return runHistoryOperation(async () => {
+				if (!history || !gpu) throw new Error('History is not ready');
+				closeReplay();
+				const pixels = new Uint8Array(gpu.docW * gpu.docH * 4).fill(255);
+				await history.reset(gpu.docW, gpu.docH, pixels);
+				gpu.applyRasterPatch({ x: 0, y: 0, w: gpu.docW, h: gpu.docH }, pixels);
+			});
+		}
+
 		function pauseReplay() {
 			previewAbort?.abort();
 			previewAbort = null;
@@ -1023,6 +1033,7 @@
 					switchBranch: switchHistoryBranch,
 					renameBranch: renameHistoryBranch,
 					deleteBranch: deleteHistoryBranch,
+					resetProject: resetHistoryProject,
 					getGraph: getHistoryGraph,
 					getSnapshots: getHistorySnapshots,
 					openReplay: openHistoryReplay,
