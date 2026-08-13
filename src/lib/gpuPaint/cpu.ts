@@ -110,12 +110,6 @@ export function spacingFor(size: number, spacingFactor: number) {
 	return Math.max(0.25, size * spacingFactor);
 }
 
-/** KisPainter::blendAverageOpacity */
-export function blendAverageOpacity(opacity: number, avg: number) {
-	if (avg < opacity) return opacity;
-	return 0.1 * opacity + 0.9 * avg;
-}
-
 export function webGpuUnavailableMessage(): string {
 	if (typeof isSecureContext !== 'undefined' && !isSecureContext) {
 		return 'WebGPU needs a secure context. http://192.168.x.x will not work on iPad — use HTTPS, or open via localhost on the same device.';

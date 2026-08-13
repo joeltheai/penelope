@@ -160,9 +160,8 @@ export function createPaintPipelines(deps: {
 
 	function buildAirbrushPipeline() {
 		/**
-		 * Krita Creamy Alpha Darken into the stroke layer (wash).
-		 * Never decreases alpha; soft tip fills toward opacity cap via flow.
-		 * Same-color lock → premul C*newA (KoCompositeOpAlphaDarken.h).
+		 * Non-incremental airbrush wash: every dab approaches (but never
+		 * exceeds) the current pressure opacity cap by flow × soft mask.
 		 */
 		const airbrushFragment = tgpu.fragmentFn({
 			in: { tipUv: d.vec2f, docUv: d.vec2f, opacityPressure: d.f32 },
@@ -180,21 +179,9 @@ export function createPaintPipelines(deps: {
 			const msk = std.exp(-r * r * 3.2) * inside;
 
 			const opacity = input.opacityPressure;
-			const flow = u.flow;
-			const averageOpacity = u.averageOpacity;
-			const srcAlpha = msk * opacity;
-
-			// KoCompositeOpAlphaDarken::calculateAlpha (Creamy wrapper)
-			const avgSafe = std.max(averageOpacity, 1e-5);
-			const fullWhenAvgHigh = std.select(
-				dstA,
-				std.mix(srcAlpha, averageOpacity, dstA / avgSafe),
-				averageOpacity > dstA
-			);
-			const fullWhenOpHigh = std.select(dstA, std.mix(dstA, opacity, msk), opacity > dstA);
-			const fullFlowAlpha = std.select(fullWhenOpHigh, fullWhenAvgHigh, averageOpacity > opacity);
-			const newA = std.mix(dstA, fullFlowAlpha, flow);
-			const C = u.color;
+			const targetA = std.max(dstA, opacity);
+			const newA = std.mix(dstA, targetA, u.flow * msk);
+			const C = d.vec3f(u.color);
 			return d.vec4f(C * newA, newA);
 		});
 

@@ -16,7 +16,6 @@ import {
 } from './constants';
 import {
 	appendStamp,
-	blendAverageOpacity,
 	makeHardBrushPixels,
 	parseColor,
 	spacingFor,
@@ -119,8 +118,7 @@ export async function createGpuPaint(
 	const airbrushUniforms = root.createUniform(AirbrushUniforms, {
 		resolution: [docW, docH],
 		color: [0, 0, 0],
-		flow: AIRBRUSH_FLOW,
-		averageOpacity: 0
+		flow: AIRBRUSH_FLOW
 	});
 	const compositeUniforms = root.createUniform(CompositeUniforms, { opacity: 1 });
 	const presentUniforms = root.createUniform(PresentUniforms, {
@@ -195,8 +193,6 @@ export async function createGpuPaint(
 	let lastColor = '#000000';
 	let destroyed = false;
 	let currentBrush: BrushKind = 'pen';
-	/** Krita KisPainter::averageOpacity EMA for Alpha Darken. */
-	let averageOpacity = 0;
 	let lassoOpts: LassoOptions = { ...DEFAULT_LASSO_OPTIONS };
 	const lasso: LassoEngine = createLassoEngine(docW, docH);
 	const fan: FanEngine = createFanEngine(docW, docH, 'fan');
@@ -388,10 +384,24 @@ export async function createGpuPaint(
 		strokeBounds.expand(batch.bounds.x + batch.bounds.w, batch.bounds.y + batch.bounds.h, 0);
 	}
 
-	/** Sequential Krita Alpha Darken dabs (sample strokeTex → write B → blit back). */
+	/**
+	 * Sequential Alpha Darken dabs encoded into one GPU submission. The copies
+	 * preserve ping-pong correctness, but avoid three queue submissions per dab.
+	 */
 	function paintAirbrushStamps(color: string) {
+		if (stampCount === 0) return;
 		const [r, g, b] = parseColor(color);
-		const single = new Float32Array(VERTS_PER_STAMP * FLOATS_PER_VERT);
+		const floats = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
+		root.device.queue.writeBuffer(root.unwrap(vertexBuf), 0, vertexCpu.buffer, 0, floats * 4);
+		airbrushUniforms.write({
+			resolution: [docW, docH],
+			color: [r, g, b],
+			flow: AIRBRUSH_FLOW
+		});
+
+		const encoder = root.device.createCommandEncoder();
+		const source = root.unwrap(strokeTex);
+		const target = root.unwrap(strokeTexB);
 
 		for (let i = 0; i < stampCount; i++) {
 			const base = i * VERTS_PER_STAMP * FLOATS_PER_VERT;
@@ -399,7 +409,6 @@ export async function createGpuPaint(
 			const y = vertexCpu[base + 1]!;
 			const size = vertexCpu[base + 4]!;
 			const sizeP = vertexCpu[base + 5]!;
-			const opacP = vertexCpu[base + 6]!;
 			const radius = size * 0.5 * Math.max(sizeP, 0.05);
 			const pad = Math.ceil(radius) + 2;
 			const x0 = Math.max(0, Math.floor(x - pad));
@@ -410,32 +419,28 @@ export async function createGpuPaint(
 			const h = y1 - y0;
 			if (w < 1 || h < 1) continue;
 
-			// Preserve destination outside the dab (replace blend only covers the quad).
-			blitRect(strokeTex, strokeTexB, { x: x0, y: y0 }, { x: x0, y: y0 }, { w, h });
-
-			for (let k = 0; k < VERTS_PER_STAMP * FLOATS_PER_VERT; k++) {
-				single[k] = vertexCpu[base + k]!;
-			}
-			vertexBuf.write(single.buffer.slice(0, single.byteLength));
-
-			airbrushUniforms.write({
-				resolution: [docW, docH],
-				color: [r, g, b],
-				flow: AIRBRUSH_FLOW,
-				averageOpacity
-			});
+			encoder.copyTextureToTexture(
+				{ texture: source, origin: [x0, y0, 0] },
+				{ texture: target, origin: [x0, y0, 0] },
+				[w, h, 1]
+			);
 
 			pipelines.strokeAirbrushPipeline
+				.with(encoder)
 				.withColorAttachment({
 					view: strokeRenderViewB,
 					loadOp: 'load',
 					storeOp: 'store'
 				})
-				.draw(VERTS_PER_STAMP);
+				.draw(VERTS_PER_STAMP, 1, i * VERTS_PER_STAMP);
 
-			blitRect(strokeTexB, strokeTex, { x: x0, y: y0 }, { x: x0, y: y0 }, { w, h });
-			averageOpacity = blendAverageOpacity(opacP, averageOpacity);
+			encoder.copyTextureToTexture(
+				{ texture: target, origin: [x0, y0, 0] },
+				{ texture: source, origin: [x0, y0, 0] },
+				[w, h, 1]
+			);
 		}
+		root.device.queue.submit([encoder.finish()]);
 		stampCount = 0;
 	}
 
@@ -578,7 +583,6 @@ export async function createGpuPaint(
 
 			stampCount = 0;
 			lastStamp = null;
-			averageOpacity = 0;
 			lasso.reset();
 			lasso.resize(nextW, nextH);
 			fan.reset();
@@ -668,7 +672,6 @@ export async function createGpuPaint(
 			strokeTexB.clear();
 			lastStamp = null;
 			stampCount = 0;
-			averageOpacity = 0;
 			if (currentBrush === 'lasso') {
 				lasso.setOptions(lassoOpts);
 				lasso.begin(lastColor);
@@ -740,7 +743,6 @@ export async function createGpuPaint(
 			strokeTexB.clear();
 			lastStamp = null;
 			stampCount = 0;
-			averageOpacity = 0;
 			lasso.reset();
 			fan.reset();
 			strokeBounds.reset();
@@ -751,7 +753,6 @@ export async function createGpuPaint(
 			if (destroyed) return;
 			stampCount = 0;
 			lastStamp = null;
-			averageOpacity = 0;
 			lasso.reset();
 			fan.reset();
 			strokeTex.clear();
@@ -863,6 +864,23 @@ export async function createGpuPaint(
 				if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
 			}
 			lastStamp = { x, y, sizePressure: sizeP, opacityPressure: opacP };
+		},
+
+		addTimedAirbrushDab(
+			x: number,
+			y: number,
+			brushDiameter: number,
+			sizePressure: number,
+			opacityPressure: number,
+			color: string
+		) {
+			if (destroyed || currentBrush !== 'airbrush') return;
+			lastColor = color;
+			const sizeP = Math.min(1, Math.max(0, sizePressure));
+			const opacP = Math.min(1, Math.max(0, opacityPressure));
+			if (sizeP <= 0 && opacP <= 0) return;
+			queueStamp(x, y, brushDiameter, sizeP, opacP);
+			if (stampCount >= MAX_STAMPS_PER_FLUSH) paintAirbrushStamps(color);
 		},
 
 		flushStamps(color: string) {

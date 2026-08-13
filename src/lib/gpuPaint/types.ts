@@ -67,6 +67,15 @@ export type GpuPaint = {
 		color: string,
 		spacingFactor?: number
 	) => void;
+	/** Queue one time-based airbrush dab even when the pointer has not moved. */
+	addTimedAirbrushDab: (
+		x: number,
+		y: number,
+		brushDiameter: number,
+		sizePressure: number,
+		opacityPressure: number,
+		color: string
+	) => void;
 	flushStamps: (color: string) => void;
 	/** Sample document color at doc-space pixel; returns `#rrggbb` or null if out of bounds. */
 	sampleColor: (x: number, y: number) => Promise<string | null>;

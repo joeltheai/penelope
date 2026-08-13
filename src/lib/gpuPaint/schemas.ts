@@ -27,8 +27,7 @@ export const FanUniforms = d.struct({
 export const AirbrushUniforms = d.struct({
 	resolution: d.vec2f,
 	color: d.vec3f,
-	flow: d.f32,
-	averageOpacity: d.f32
+	flow: d.f32
 });
 
 export const CompositeUniforms = d.struct({

@@ -391,14 +391,13 @@
 			// Krita airbrush rate ≈ dabs/sec while held still.
 			airbrushTimer = setInterval(() => {
 				if (!drawing || !strokeActive || !gpu || !lastAirbrush) return;
-				gpu.addSample(
+				gpu.addTimedAirbrushDab(
 					lastAirbrush.x,
 					lastAirbrush.y,
 					size * 2,
 					lastAirbrush.sizeP,
 					lastAirbrush.opacP,
-					color,
-					spacing
+					color
 				);
 				gpu.flushStamps(color);
 				present();

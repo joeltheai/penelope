@@ -17,9 +17,8 @@ export const MAX_HISTORY = 50;
  */
 export const HOT_PIXEL_BUDGET = 32_000_000;
 /**
- * Krita Creamy Alpha Darken flow — how fast dabs fill toward the stroke
- * opacity cap (see KoCompositeOpAlphaDarken + KoAlphaDarkenParamsWrapperCreamy).
- * Kept low so the soft tip builds a gentle wash instead of a hard blot.
+ * Per-dab airbrush flow. Repeated dabs approach the pressure opacity cap,
+ * matching Krita's non-incremental Alpha Darken wash behavior.
  */
 export const AIRBRUSH_FLOW = 0.12;
 
