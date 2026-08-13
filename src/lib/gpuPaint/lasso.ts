@@ -8,12 +8,6 @@ export const DEFAULT_LASSO_OPTIONS: LassoOptions = {
 	splat: false
 };
 
-type CurvePoint = Point & {
-	c1?: Point;
-	c2?: Point;
-	c3?: Point;
-};
-
 type PullStamp = {
 	x: number;
 	y: number;
@@ -35,29 +29,20 @@ class CatmullLine {
 		this.path.length = 0;
 	}
 
-	getPoints(): CurvePoint[] {
-		if (this.path.length < 4) return [];
-		const result: CurvePoint[] = [];
-		const { path, tension } = this;
-		for (let n = 0; n < path.length; n++) {
-			const p1 = path[n]!;
-			const p2 = path[Math.min(path.length - 1, n + 1)]!;
-			const p3 = path[Math.min(path.length - 1, n + 2)]!;
-			const p4 = path[Math.min(path.length - 1, n + 3)]!;
-			if (n === 0) result[n] = { x: p2.x, y: p2.y };
-			const cur = result[n]!;
-			cur.c1 = {
-				x: p2.x + (tension * p3.x - tension * p1.x) / 6,
-				y: p2.y + (tension * p3.y - tension * p1.y) / 6
-			};
-			cur.c2 = {
-				x: p3.x + (tension * p2.x - tension * p4.x) / 6,
-				y: p3.y + (tension * p2.y - tension * p4.y) / 6
-			};
-			cur.c3 = { x: p3.x, y: p3.y };
-			result[n + 1] = { x: p3.x, y: p3.y };
-		}
-		return result;
+	get isDrawable() {
+		return this.path.length >= 4;
+	}
+
+	get tip(): Point | null {
+		return this.isDrawable ? this.path[this.path.length - 1]! : null;
+	}
+
+	get points(): readonly Point[] {
+		return this.path;
+	}
+
+	get curveTension(): number {
+		return this.tension;
 	}
 }
 
@@ -114,42 +99,63 @@ function premulCopy(src: Uint8ClampedArray, w: number, h: number, dst: Uint8Arra
 
 /** Cap splat kick so dirty AABBs stay small. */
 const SPLAT_MAX_DISPLACE = 28;
-/** Don't redraw/upload closed fills more often than this (ms). */
-const FILL_REDRAW_MS = 32;
+export const MAX_LASSO_EDGES = 32_768;
+const FLOATS_PER_VERTEX = 3;
+const VERTICES_PER_EDGE = 3;
 
 export type LassoSampleResult = {
+	kind: 'pixels';
 	pixels: Uint8Array;
 	bounds: Rect;
 	hasContent: boolean;
 };
 
-/** Closed-path fill / pull-shape lasso, rasterized via OffscreenCanvas. */
+export type LassoFillBatch = {
+	kind: 'fill';
+	vertices: Float32Array;
+	vertexCount: number;
+	bounds: Rect;
+};
+
+export type LassoResult = LassoSampleResult | LassoFillBatch;
+
+/** GPU geometry for closed fill; pull-shapes retain incremental Canvas rasterization. */
 export function createLassoEngine(docW: number, docH: number) {
 	let opts: LassoOptions = { ...DEFAULT_LASSO_OPTIONS };
 	let color = '#000000';
 	const paintAlpha = 1;
 
-	const canvas = new OffscreenCanvas(docW, docH);
-	const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: true })!;
-	ctx.imageSmoothingEnabled = true;
+	let canvas: OffscreenCanvas | null = null;
+	let ctx: OffscreenCanvasRenderingContext2D | null = null;
 
 	const catmull = new CatmullLine();
 	let lastRaw: Point | null = null;
-	let curve: CurvePoint[] = [];
 	const pulls: PullStamp[] = [];
 	let union: Rect | null = null;
 	let hasContent = false;
-	let lastFillRedrawAt = 0;
 	let fillDirty = false;
+	const fillVertices = new Float32Array(MAX_LASSO_EDGES * VERTICES_PER_EDGE * FLOATS_PER_VERTEX);
+	const fillPoints = new Float32Array(MAX_LASSO_EDGES * 2);
 
 	const SMOOTH = 0.8;
 
 	function resize(nextW: number, nextH: number) {
 		docW = nextW;
 		docH = nextH;
-		canvas.width = nextW;
-		canvas.height = nextH;
+		if (canvas) {
+			canvas.width = nextW;
+			canvas.height = nextH;
+		}
 		reset();
+	}
+
+	function pullContext(): OffscreenCanvasRenderingContext2D {
+		if (!canvas || !ctx) {
+			canvas = new OffscreenCanvas(docW, docH);
+			ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: true })!;
+			ctx.imageSmoothingEnabled = true;
+		}
+		return ctx;
 	}
 
 	function setOptions(next: Partial<LassoOptions>) {
@@ -160,14 +166,14 @@ export function createLassoEngine(docW: number, docH: number) {
 	function reset() {
 		catmull.clear();
 		lastRaw = null;
-		curve = [];
 		pulls.length = 0;
 		union = null;
 		hasContent = false;
-		lastFillRedrawAt = 0;
 		fillDirty = false;
-		ctx.setTransform(1, 0, 0, 1, 0, 0);
-		ctx.clearRect(0, 0, docW, docH);
+		if (ctx) {
+			ctx.setTransform(1, 0, 0, 1, 0, 0);
+			ctx.clearRect(0, 0, docW, docH);
+		}
 	}
 
 	function begin(hex: string) {
@@ -215,91 +221,6 @@ export function createLassoEngine(docW: number, docH: number) {
 		return true;
 	}
 
-	function pathBounds(pad: number): Rect | null {
-		if (curve.length < 2) return null;
-		let x0 = Infinity;
-		let y0 = Infinity;
-		let x1 = -Infinity;
-		let y1 = -Infinity;
-		const grow = (p: Point) => {
-			x0 = Math.min(x0, p.x);
-			y0 = Math.min(y0, p.y);
-			x1 = Math.max(x1, p.x);
-			y1 = Math.max(y1, p.y);
-		};
-		for (const p of curve) {
-			grow(p);
-			if (p.c1) grow(p.c1);
-			if (p.c2) grow(p.c2);
-			if (p.c3) grow(p.c3);
-		}
-		return clampRect(
-			{
-				x: Math.floor(x0 - pad),
-				y: Math.floor(y0 - pad),
-				w: Math.ceil(x1 - x0 + pad * 2),
-				h: Math.ceil(y1 - y0 + pad * 2)
-			},
-			docW,
-			docH
-		);
-	}
-
-	function solidStyle() {
-		const { r, g, b } = parseHex(color);
-		ctx.fillStyle = `rgba(${r},${g},${b},${paintAlpha})`;
-	}
-
-	function drawClosedFillPath() {
-		ctx.beginPath();
-		for (let i = 0; i < curve.length - 2; i++) {
-			const dat = curve[i]!;
-			if (i === 0) ctx.moveTo(dat.x, dat.y);
-			const c1 = dat.c1!;
-			const c2 = dat.c2!;
-			const c3 = dat.c3!;
-			if (opts.splat) {
-				ctx.lineTo(c1.x, c1.y);
-				ctx.lineTo(c2.x, c2.y);
-				ctx.lineTo(c3.x, c3.y);
-			} else {
-				ctx.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, c3.x, c3.y);
-			}
-		}
-		ctx.closePath();
-		ctx.fill('evenodd');
-	}
-
-	function redrawClosedFill(): Rect | null {
-		const prev = union;
-		if (prev) ctx.clearRect(prev.x, prev.y, prev.w, prev.h);
-		const next = pathBounds(2);
-		if (!next) {
-			union = null;
-			return prev;
-		}
-		solidStyle();
-		drawClosedFillPath();
-		union = next;
-		hasContent = true;
-		fillDirty = false;
-		lastFillRedrawAt = performance.now();
-		if (prev) {
-			return clampRect(
-				expandRect(prev, next.x, next.y, next.x + next.w, next.y + next.h),
-				docW,
-				docH
-			);
-		}
-		return next;
-	}
-
-	function tipOfCurve(): Point | null {
-		if (curve.length < 1) return null;
-		const last = curve[curve.length - 1]!;
-		return { x: last.x, y: last.y };
-	}
-
 	function makePull(x: number, y: number): PullStamp {
 		const lib = opts.splat ? PULL_SHAPES_SPLAT : PULL_SHAPES;
 		const path = lib[Math.floor(Math.random() * lib.length)] ?? lib[0]!;
@@ -324,45 +245,138 @@ export function createLassoEngine(docW: number, docH: number) {
 	}
 
 	function drawPull(stamp: PullStamp) {
+		const context = pullContext();
 		const { r, g, b } = parseHex(color);
-		ctx.save();
-		ctx.translate(stamp.x, stamp.y);
-		ctx.scale(stamp.scale, stamp.scale);
-		ctx.rotate((stamp.angleDeg / 180) * Math.PI);
-		ctx.fillStyle = `rgba(${r},${g},${b},${paintAlpha})`;
-		ctx.fill(new Path2D(stamp.path));
-		ctx.restore();
+		context.save();
+		context.translate(stamp.x, stamp.y);
+		context.scale(stamp.scale, stamp.scale);
+		context.rotate((stamp.angleDeg / 180) * Math.PI);
+		context.fillStyle = `rgba(${r},${g},${b},${paintAlpha})`;
+		context.fill(new Path2D(stamp.path));
+		context.restore();
 	}
 
 	function readDirty(bounds: Rect): LassoSampleResult {
-		const img = ctx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
+		const img = pullContext().getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
 		const pixels = new Uint8Array(bounds.w * bounds.h * 4);
 		premulCopy(img.data, bounds.w, bounds.h, pixels);
-		return { pixels, bounds, hasContent };
+		return { kind: 'pixels', pixels, bounds, hasContent };
 	}
 
-	function maybeRedrawClosedFill(force: boolean): LassoSampleResult | null {
-		if (curve.length < 3) return null;
-		const now = performance.now();
-		if (!force && now - lastFillRedrawAt < FILL_REDRAW_MS) {
-			fillDirty = true;
-			return null;
+	function flattenFillCurve(): { pointCount: number; bounds: Rect } | null {
+		const path = catmull.points;
+		if (path.length < 4) return null;
+		const subdivisions = opts.splat ? 3 : 4;
+		const candidateCount = 1 + (path.length - 2) * subdivisions;
+		const sampleStep = Math.max(1, Math.ceil(candidateCount / MAX_LASSO_EDGES));
+		let candidateIndex = 0;
+		let pointCount = 0;
+		let x0 = Infinity;
+		let y0 = Infinity;
+		let x1 = -Infinity;
+		let y1 = -Infinity;
+		const emit = (x: number, y: number) => {
+			x0 = Math.min(x0, x);
+			y0 = Math.min(y0, y);
+			x1 = Math.max(x1, x);
+			y1 = Math.max(y1, y);
+			if (candidateIndex % sampleStep === 0 && pointCount < MAX_LASSO_EDGES) {
+				fillPoints[pointCount * 2] = x;
+				fillPoints[pointCount * 2 + 1] = y;
+				pointCount++;
+			}
+			candidateIndex++;
+		};
+		const emitCubic = (p0: Point, c1: Point, c2: Point, p3: Point, t: number) => {
+			const u = 1 - t;
+			const uu = u * u;
+			const tt = t * t;
+			emit(
+				uu * u * p0.x + 3 * uu * t * c1.x + 3 * u * tt * c2.x + tt * t * p3.x,
+				uu * u * p0.y + 3 * uu * t * c1.y + 3 * u * tt * c2.y + tt * t * p3.y
+			);
+		};
+
+		emit(path[1]!.x, path[1]!.y);
+		const tension = catmull.curveTension;
+		for (let i = 0; i < path.length - 2; i++) {
+			const p1 = path[i]!;
+			const p2 = path[i + 1]!;
+			const p3 = path[i + 2]!;
+			const p4 = path[Math.min(path.length - 1, i + 3)]!;
+			const c1 = {
+				x: p2.x + (tension * p3.x - tension * p1.x) / 6,
+				y: p2.y + (tension * p3.y - tension * p1.y) / 6
+			};
+			const c2 = {
+				x: p3.x + (tension * p2.x - tension * p4.x) / 6,
+				y: p3.y + (tension * p2.y - tension * p4.y) / 6
+			};
+			if (opts.splat) {
+				emit(c1.x, c1.y);
+				emit(c2.x, c2.y);
+				emit(p3.x, p3.y);
+			} else {
+				// Four line segments closely approximate the Canvas cubic while keeping
+				// geometry much smaller than a document-sized pixel upload.
+				emitCubic(p2, c1, c2, p3, 0.25);
+				emitCubic(p2, c1, c2, p3, 0.5);
+				emitCubic(p2, c1, c2, p3, 0.75);
+				emit(p3.x, p3.y);
+			}
 		}
-		const dirty = redrawClosedFill();
-		if (!dirty) return null;
-		return readDirty(dirty);
+		const bounds = clampRect(
+			{
+				x: Math.floor(x0 - 2),
+				y: Math.floor(y0 - 2),
+				w: Math.ceil(x1 - x0 + 4),
+				h: Math.ceil(y1 - y0 + 4)
+			},
+			docW,
+			docH
+		);
+		return bounds && pointCount >= 3 ? { pointCount, bounds } : null;
 	}
 
-	function sample(x: number, y: number, hex: string): LassoSampleResult | null {
+	function buildFillBatch(): LassoFillBatch | null {
+		const flattened = flattenFillCurve();
+		if (!flattened) return null;
+		const { pointCount, bounds } = flattened;
+		const anchor = { x: bounds.x - 1, y: bounds.y - 1 };
+		let vertexCount = 0;
+		const writeVertex = (x: number, y: number) => {
+			const offset = vertexCount * FLOATS_PER_VERTEX;
+			fillVertices[offset] = x;
+			fillVertices[offset + 1] = y;
+			fillVertices[offset + 2] = 1;
+			vertexCount++;
+		};
+		for (let edge = 0; edge < pointCount; edge++) {
+			const next = (edge + 1) % pointCount;
+			writeVertex(anchor.x, anchor.y);
+			writeVertex(fillPoints[edge * 2]!, fillPoints[edge * 2 + 1]!);
+			writeVertex(fillPoints[next * 2]!, fillPoints[next * 2 + 1]!);
+		}
+
+		union = bounds;
+		hasContent = true;
+		fillDirty = false;
+		return {
+			kind: 'fill',
+			vertices: fillVertices.subarray(0, vertexCount * FLOATS_PER_VERTEX),
+			vertexCount,
+			bounds
+		};
+	}
+
+	function sample(x: number, y: number, hex: string): LassoResult | null {
 		color = hex;
 		if (!addRawPoint({ x, y })) return null;
 
-		curve = catmull.getPoints();
-
 		if (opts.mode === 'pull') {
-			if (curve.length < 2) return null;
+			const tip = catmull.tip;
+			if (!tip) return null;
 			if (pulls.length > 0 && Math.random() <= 0.5) return null;
-			const tip = tipOfCurve()!;
 			const stamp = makePull(tip.x, tip.y);
 			pulls.push(stamp);
 			drawPull(stamp);
@@ -374,13 +388,14 @@ export function createLassoEngine(docW: number, docH: number) {
 			return readDirty(clipped);
 		}
 
-		return maybeRedrawClosedFill(false);
+		fillDirty = catmull.isDrawable;
+		return null;
 	}
 
-	function flush(): LassoSampleResult | null {
+	function flush(): LassoFillBatch | null {
 		if (opts.mode !== 'fill') return null;
-		if (!fillDirty && hasContent) return null;
-		return maybeRedrawClosedFill(true);
+		if (!fillDirty) return null;
+		return buildFillBatch();
 	}
 
 	function finalizeBounds(): Rect | null {

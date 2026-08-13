@@ -17,6 +17,7 @@ export function createPaintPipelines(deps: {
 	vertexBuf: any;
 	fanLayout: any;
 	fanVertexBuf: any;
+	lassoVertexBuf: any;
 	strokeUniforms: any;
 	fanUniforms: any;
 	airbrushUniforms: any;
@@ -36,6 +37,7 @@ export function createPaintPipelines(deps: {
 		vertexBuf,
 		fanLayout,
 		fanVertexBuf,
+		lassoVertexBuf,
 		strokeUniforms,
 		fanUniforms,
 		airbrushUniforms,
@@ -64,6 +66,20 @@ export function createPaintPipelines(deps: {
 		'use gpu';
 		const alpha = input.opacity;
 		return d.vec4f(d.vec3f(fanUniforms.$.color) * alpha, alpha);
+	});
+
+	const lassoStencilVertex = tgpu.vertexFn({
+		in: { pos: d.vec2f, opacity: d.f32 },
+		out: { position: d.builtin.position }
+	})((input) => {
+		'use gpu';
+		const clip = (input.pos / fanUniforms.$.resolution) * d.vec2f(2, -2) + d.vec2f(-1, 1);
+		return { position: d.vec4f(clip, 0, 1) };
+	});
+
+	const lassoFillFragment = tgpu.fragmentFn({ out: d.vec4f })(() => {
+		'use gpu';
+		return d.vec4f(d.vec3f(fanUniforms.$.color), 1);
 	});
 
 	// Pipelines that sample textures capture views at shell creation time —
@@ -332,10 +348,41 @@ export function createPaintPipelines(deps: {
 		})
 		.with(fanLayout, fanVertexBuf);
 
+	const lassoStencilPipeline = root
+		.createRenderPipeline({
+			attribs: { ...fanLayout.attrib },
+			vertex: lassoStencilVertex,
+			depthStencil: {
+				format: 'stencil8',
+				stencilFront: { compare: 'always', passOp: 'invert' },
+				stencilBack: { compare: 'always', passOp: 'invert' },
+				stencilReadMask: 1,
+				stencilWriteMask: 1
+			},
+			primitive: { topology: 'triangle-list' }
+		})
+		.with(fanLayout, lassoVertexBuf);
+
+	const lassoFillPipeline = root.createRenderPipeline({
+		vertex: common.fullScreenTriangle,
+		fragment: lassoFillFragment,
+		targets: { format: 'rgba8unorm' },
+		depthStencil: {
+			format: 'stencil8',
+			stencilFront: { compare: 'not-equal' },
+			stencilBack: { compare: 'not-equal' },
+			stencilReadMask: 1,
+			stencilWriteMask: 0
+		},
+		primitive: { topology: 'triangle-list' }
+	});
+
 
 	return {
 		strokeWashPipeline,
 		fanPipeline,
+		lassoStencilPipeline,
+		lassoFillPipeline,
 		get strokeAirbrushPipeline() {
 			return strokeAirbrushPipeline;
 		},

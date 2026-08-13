@@ -25,6 +25,8 @@ import {
 import {
 	createLassoEngine,
 	DEFAULT_LASSO_OPTIONS,
+	MAX_LASSO_EDGES,
+	type LassoFillBatch,
 	type LassoEngine
 } from './lasso';
 import { createFanEngine, type FanBatch, type FanEngine, type FanKind } from './fan';
@@ -80,6 +82,10 @@ export async function createGpuPaint(
 	let strokeTex = createDocTexture(docW, docH);
 	/** Ping-pong target for Krita Alpha Darken airbrush dabs (sample strokeTex, write here). */
 	let strokeTexB = createDocTexture(docW, docH);
+	function createLassoStencilTexture(w: number, h: number) {
+		return root.createTexture({ size: [w, h], format: 'stencil8' }).$usage('render');
+	}
+	let lassoStencilTex = createLassoStencilTexture(docW, docH);
 	const brushTex = root
 		.createTexture({ size: [BRUSH_SIZE, BRUSH_SIZE], format: 'rgba8unorm' })
 		.$usage('sampled');
@@ -93,6 +99,8 @@ export async function createGpuPaint(
 	let docRenderView = docTex.createView('render');
 	let strokeRenderView = strokeTex.createView('render');
 	let strokeRenderViewB = strokeTexB.createView('render');
+	let strokeRawRenderView = root.unwrap(strokeTex).createView();
+	let lassoStencilRawView = root.unwrap(lassoStencilTex).createView();
 
 	/** Filled via root.with(...) when (re)building pipelines after a doc resize. */
 	const docViewSlot = tgpu.slot<typeof docView>();
@@ -136,6 +144,9 @@ export async function createGpuPaint(
 	const fanVertexBuf = root
 		.createBuffer(fanLayout.schemaForCount(MAX_STAMPS_PER_FLUSH * 3))
 		.$usage('vertex');
+	const lassoVertexBuf = root
+		.createBuffer(fanLayout.schemaForCount(MAX_LASSO_EDGES * 3))
+		.$usage('vertex');
 
 	const textureViews = { docView, strokeView };
 	const pipelines = createPaintPipelines({
@@ -145,6 +156,7 @@ export async function createGpuPaint(
 		vertexBuf: vertexBuf as any,
 		fanLayout,
 		fanVertexBuf,
+		lassoVertexBuf,
 		strokeUniforms: strokeUniforms as any,
 		fanUniforms,
 		airbrushUniforms: airbrushUniforms as any,
@@ -325,6 +337,57 @@ export async function createGpuPaint(
 		);
 	}
 
+	function paintLassoFill(batch: LassoFillBatch, color: string) {
+		lassoVertexBuf.write(
+			batch.vertices.buffer.slice(
+				batch.vertices.byteOffset,
+				batch.vertices.byteOffset + batch.vertices.byteLength
+			) as ArrayBuffer
+		);
+		const [r, g, b] = parseColor(color);
+		fanUniforms.write({ resolution: [docW, docH], color: [r, g, b] });
+
+		const encoder = root.device.createCommandEncoder();
+		const stencilPass = encoder.beginRenderPass({
+			colorAttachments: [],
+			depthStencilAttachment: {
+				view: lassoStencilRawView,
+				stencilClearValue: 0,
+				stencilLoadOp: 'clear',
+				stencilStoreOp: 'store'
+			}
+		});
+		pipelines.lassoStencilPipeline
+			.with(stencilPass)
+			.withStencilReference(0)
+			.draw(batch.vertexCount);
+		stencilPass.end();
+
+		const fillPass = encoder.beginRenderPass({
+			colorAttachments: [
+				{
+					view: strokeRawRenderView,
+					clearValue: [0, 0, 0, 0],
+					loadOp: 'clear',
+					storeOp: 'store'
+				}
+			],
+			depthStencilAttachment: {
+				view: lassoStencilRawView,
+				stencilLoadOp: 'load',
+				stencilStoreOp: 'discard'
+			}
+		});
+		fillPass.setScissorRect(batch.bounds.x, batch.bounds.y, batch.bounds.w, batch.bounds.h);
+		pipelines.lassoFillPipeline.with(fillPass).withStencilReference(0).draw(3);
+		fillPass.end();
+		root.device.queue.submit([encoder.finish()]);
+
+		strokeBounds.reset();
+		strokeBounds.expand(batch.bounds.x, batch.bounds.y, 0);
+		strokeBounds.expand(batch.bounds.x + batch.bounds.w, batch.bounds.y + batch.bounds.h, 0);
+	}
+
 	/** Sequential Krita Alpha Darken dabs (sample strokeTex → write B → blit back). */
 	function paintAirbrushStamps(color: string) {
 		const [r, g, b] = parseColor(color);
@@ -376,48 +439,16 @@ export async function createGpuPaint(
 		stampCount = 0;
 	}
 
-	/** Staging texture reused across path-tool dirty uploads (grows as needed). */
-	let lassoStage: PatchTex | null = null;
-	let lassoStageW = 0;
-	let lassoStageH = 0;
-
 	function uploadPathDirty(result: { pixels: Uint8Array; bounds: Rect }) {
 		const { bounds, pixels } = result;
-		if (!lassoStage || lassoStageW < bounds.w || lassoStageH < bounds.h) {
-			lassoStage?.destroy();
-			lassoStageW = Math.max(bounds.w, lassoStageW);
-			lassoStageH = Math.max(bounds.h, lassoStageH);
-			// Grow with headroom so we don't thrash on small expansions.
-			lassoStageW = Math.min(docW, Math.max(lassoStageW, Math.ceil(bounds.w * 1.25)));
-			lassoStageH = Math.min(docH, Math.max(lassoStageH, Math.ceil(bounds.h * 1.25)));
-			lassoStage = createPatchTex(lassoStageW, lassoStageH);
-		}
-		// write() expects tightly packed rows matching the texture width.
-		// Copy into a full-stage buffer when dirty rect is smaller than stage.
-		if (bounds.w === lassoStageW && bounds.h <= lassoStageH) {
-			if (bounds.h === lassoStageH) {
-				lassoStage.write(pixels);
-			} else {
-				const full = new Uint8Array(lassoStageW * lassoStageH * 4);
-				full.set(pixels);
-				lassoStage.write(full);
-			}
-		} else {
-			const full = new Uint8Array(lassoStageW * lassoStageH * 4);
-			for (let row = 0; row < bounds.h; row++) {
-				full.set(
-					pixels.subarray(row * bounds.w * 4, (row + 1) * bounds.w * 4),
-					row * lassoStageW * 4
-				);
-			}
-			lassoStage.write(full);
-		}
-		blitRect(
-			lassoStage,
-			strokeTex,
-			{ x: 0, y: 0 },
-			{ x: bounds.x, y: bounds.y },
-			{ w: bounds.w, h: bounds.h }
+		root.device.queue.writeTexture(
+			{
+				texture: root.unwrap(strokeTex),
+				origin: { x: bounds.x, y: bounds.y, z: 0 }
+			},
+			pixels,
+			{ bytesPerRow: bounds.w * 4, rowsPerImage: bounds.h },
+			{ width: bounds.w, height: bounds.h, depthOrArrayLayers: 1 }
 		);
 		strokeBounds.expand(bounds.x + bounds.w * 0.5, bounds.y + bounds.h * 0.5, Math.max(bounds.w, bounds.h) * 0.5);
 	}
@@ -552,10 +583,6 @@ export async function createGpuPaint(
 			lasso.resize(nextW, nextH);
 			fan.reset();
 			fan.resize(nextW, nextH);
-			lassoStage?.destroy();
-			lassoStage = null;
-			lassoStageW = 0;
-			lassoStageH = 0;
 			strokeBounds.reset();
 			while (undoStack.length > 0) disposeEntry(undoStack.pop()!);
 			while (redoStack.length > 0) disposeEntry(redoStack.pop()!);
@@ -572,17 +599,21 @@ export async function createGpuPaint(
 			const oldDoc = docTex;
 			const oldStroke = strokeTex;
 			const oldStrokeB = strokeTexB;
+			const oldLassoStencil = lassoStencilTex;
 
 			docW = nextW;
 			docH = nextH;
 			docTex = createDocTexture(nextW, nextH);
 			strokeTex = createDocTexture(nextW, nextH);
 			strokeTexB = createDocTexture(nextW, nextH);
+			lassoStencilTex = createLassoStencilTexture(nextW, nextH);
 			docView = docTex.createView();
 			strokeView = strokeTex.createView();
 			docRenderView = docTex.createView('render');
 			strokeRenderView = strokeTex.createView('render');
 			strokeRenderViewB = strokeTexB.createView('render');
+			strokeRawRenderView = root.unwrap(strokeTex).createView();
+			lassoStencilRawView = root.unwrap(lassoStencilTex).createView();
 
 			const pixels = new Uint8Array(nextW * nextH * 4).fill(255);
 			const srcX0 = Math.max(0, cropX);
@@ -610,6 +641,7 @@ export async function createGpuPaint(
 				oldDoc.destroy();
 				oldStroke.destroy();
 				oldStrokeB.destroy();
+				oldLassoStencil.destroy();
 			});
 
 			return true;
@@ -653,7 +685,7 @@ export async function createGpuPaint(
 			if (currentBrush === 'lasso') {
 				stampCount = 0;
 				const flushed = lasso.flush();
-				if (flushed) uploadPathDirty(flushed);
+				if (flushed) paintLassoFill(flushed, lastColor);
 				const ok = lasso.hasDrawable();
 				const final = lasso.finalizeBounds();
 				lasso.reset();
@@ -790,7 +822,8 @@ export async function createGpuPaint(
 
 			if (currentBrush === 'lasso') {
 				const dirty = lasso.sample(x, y, color);
-				if (dirty) uploadPathDirty(dirty);
+				if (dirty?.kind === 'fill') paintLassoFill(dirty, color);
+				else if (dirty) uploadPathDirty(dirty);
 				return;
 			}
 
@@ -833,6 +866,11 @@ export async function createGpuPaint(
 		},
 
 		flushStamps(color: string) {
+			if (currentBrush === 'lasso') {
+				const dirty = lasso.flush();
+				if (dirty) paintLassoFill(dirty, color);
+				return;
+			}
 			if (isFanBrush(currentBrush)) {
 				const dirty = fan.flush();
 				if (dirty) paintFanBatch(dirty, color);
@@ -879,8 +917,7 @@ export async function createGpuPaint(
 			destroyed = true;
 			lasso.reset();
 			fan.reset();
-			lassoStage?.destroy();
-			lassoStage = null;
+			lassoStencilTex.destroy();
 			for (const e of undoStack) disposeEntry(e);
 			for (const e of redoStack) disposeEntry(e);
 			undoStack.length = 0;
