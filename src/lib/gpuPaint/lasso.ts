@@ -1,5 +1,5 @@
 import type { LassoOptions, Rect } from './types';
-import { PULL_SHAPES, PULL_SHAPES_SPLAT } from './lassoShapes';
+import { PULL_STAMPS, PULL_STAMPS_SPLAT } from './lassoShapes';
 
 export type Point = { x: number; y: number };
 
@@ -73,7 +73,7 @@ function clampRect(r: Rect, docW: number, docH: number): Rect | null {
 	return { x: x0, y: y0, w, h };
 }
 
-function parseHex(hex: string): { r: number; g: number; b: number } {
+function parseHex(hex: string) {
 	const h = hex.replace('#', '');
 	const full =
 		h.length === 3
@@ -222,7 +222,7 @@ export function createLassoEngine(docW: number, docH: number) {
 	}
 
 	function makePull(x: number, y: number): PullStamp {
-		const lib = opts.splat ? PULL_SHAPES_SPLAT : PULL_SHAPES;
+		const lib = opts.splat ? PULL_STAMPS_SPLAT : PULL_STAMPS;
 		const path = lib[Math.floor(Math.random() * lib.length)] ?? lib[0]!;
 		const scale = (0.1 + Math.random() * 2) * (Math.min(docW, docH) / 1200);
 		return {
