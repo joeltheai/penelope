@@ -79,6 +79,18 @@
 		return nodeId ?? '__root__';
 	}
 
+	function formatBytes(bytes: number) {
+		if (bytes < 1024) return `${bytes} B`;
+		const units = ['KB', 'MB', 'GB', 'TB'];
+		let value = bytes / 1024;
+		let unit = units[0]!;
+		for (let index = 1; index < units.length && value >= 1024; index++) {
+			value /= 1024;
+			unit = units[index]!;
+		}
+		return `${value < 10 ? value.toFixed(1) : value.toFixed(0)} ${unit}`;
+	}
+
 	function revokeSnapshots() {
 		for (const url of Object.values(snapshotUrls)) URL.revokeObjectURL(url);
 		snapshotUrls = {};
@@ -121,6 +133,8 @@
 
 	function savedPositions() {
 		try {
+			// SAFETY: POSITION_KEY is only ever written by this dialog as { x, y } numbers;
+			// JSON.parse returns `any`, so assert the stored shape.
 			return JSON.parse(localStorage.getItem(POSITION_KEY) ?? '{}') as Record<
 				string,
 				{ x: number; y: number }
@@ -223,7 +237,10 @@
 			};
 			return;
 		}
-		if (!(event.target as Element).closest('button')) {
+		// SAFETY: pointerdown targets on this surface are elements (buttons and the SVG
+		// viewport); Element.closest requires an Element, not a Text node.
+		const target = event.target as Element;
+		if (!target.closest('button')) {
 			panPointerId = event.pointerId;
 			panStart = { x: event.clientX, y: event.clientY, viewX, viewY };
 			viewport?.setPointerCapture(event.pointerId);
@@ -257,6 +274,7 @@
 
 	function onCardPointerDown(event: PointerEvent, card: HistoryGraphCard) {
 		if (event.button !== 0) return;
+		// SAFETY: bound to a history card element in the template; currentTarget is that HTMLElement.
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		drag = {
 			cardId: card.id,
@@ -471,6 +489,8 @@
 	function scrubReplay(event: Event) {
 		if (!api) return;
 		api.pauseReplay();
+		// SAFETY: bound to the replay scrubber <input type="range"> in the template, so
+		// currentTarget is that input element and its value is a numeric index string.
 		replayIndex = Number((event.currentTarget as HTMLInputElement).value);
 		if (scrubRaf) cancelAnimationFrame(scrubRaf);
 		scrubRaf = requestAnimationFrame(() => {
@@ -518,6 +538,7 @@
 
 	function onPanelResizeStart(event: PointerEvent) {
 		if (event.button !== 0) return;
+		// SAFETY: bound to the panel resize handle element in the template; currentTarget is that HTMLElement.
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		panelResize = {
 			pointerId: event.pointerId,
@@ -571,6 +592,14 @@
 >
 	<header class="flex h-12 shrink-0 items-center gap-2 border-b border-white/10 px-3">
 		<h2 class="text-sm font-semibold">History</h2>
+		{#if graph}
+			<span
+				class="text-[10px] text-white/40"
+				title={`Raw pixel payload: ${formatBytes(graph.storage.patchBytes)} history + ${formatBytes(graph.storage.baselineBytes)} baseline. Browser database overhead is additional.`}
+			>
+				{formatBytes(graph.storage.totalBytes)} stored pixels
+			</span>
+		{/if}
 		<div class="ml-auto flex items-center gap-2">
 			<button
 				type="button"

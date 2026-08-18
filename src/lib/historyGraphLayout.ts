@@ -145,7 +145,6 @@ export function layoutHistoryGraph(graph: HistoryGraphData): HistoryGraphLayout 
 
 	for (const branch of graph.branches) {
 		const tipDepth = depthOf(branch.tipNodeId);
-		const forkDepth = depthOf(branch.forkNodeId);
 		let x = xForDepth(tipDepth);
 		if (
 			branch.tipNodeId === branch.forkNodeId ||
