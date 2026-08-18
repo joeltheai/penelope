@@ -75,18 +75,21 @@
 	function onLoupePointerDown(e: PointerEvent) {
 		if (e.button !== 0 && e.pointerType === 'mouse') return;
 		e.preventDefault();
+		// SAFETY: bound to the loupe element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		el.setPointerCapture(e.pointerId);
 		void updateLoupe(e.clientX, e.clientY);
 	}
 
 	function onLoupePointerMove(e: PointerEvent) {
+		// SAFETY: bound to the loupe element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (!el.hasPointerCapture(e.pointerId)) return;
 		void updateLoupe(e.clientX, e.clientY);
 	}
 
 	function onLoupePointerUp(e: PointerEvent) {
+		// SAFETY: bound to the loupe element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (el.hasPointerCapture(e.pointerId)) {
 			el.releasePointerCapture(e.pointerId);

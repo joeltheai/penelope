@@ -111,7 +111,7 @@ export function spacingFor(size: number, spacingFactor: number) {
 }
 
 export function webGpuUnavailableMessage(): string {
-	if (typeof isSecureContext !== 'undefined' && !isSecureContext) {
+	if ('isSecureContext' in globalThis && globalThis.isSecureContext === false) {
 		return 'WebGPU needs a secure context. http://192.168.x.x will not work on iPad — use HTTPS, or open via localhost on the same device.';
 	}
 	return 'WebGPU is not available here. On iPad it needs iPadOS 26+ (Safari 26); feature flags on older versions usually do not expose navigator.gpu.';

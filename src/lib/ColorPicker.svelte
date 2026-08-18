@@ -97,7 +97,9 @@
 		}
 
 		// Chromium EyeDropper: system loupe, pick from anywhere on screen.
-		if (typeof window.EyeDropper === 'function') {
+		// SAFETY: app.d.ts declares window.EyeDropper as optional; its presence is the
+		// capability check (undefined in Safari/iPad, so the fallback loupe path runs).
+		if (window.EyeDropper) {
 			try {
 				const result = await new window.EyeDropper().open();
 				commitHex(result.sRGBHex);
@@ -119,10 +121,12 @@
 	let rootEl: HTMLElement | undefined = $state();
 
 	$effect(() => {
-		if (typeof window === 'undefined') return;
+		if (!('window' in globalThis)) return;
 		try {
 			const raw = localStorage.getItem(POS_KEY);
 			if (raw) {
+				// SAFETY: POS_KEY is only ever written by savePos() as { x, y } numbers;
+				// JSON.parse returns `any`, so assert the stored shape.
 				const saved = JSON.parse(raw) as { x: number; y: number };
 				posX = saved.x;
 				posY = saved.y;
@@ -158,6 +162,8 @@
 
 	function onDragStart(e: PointerEvent) {
 		if (e.button !== 0) return;
+		// SAFETY: onDragStart is bound to the picker's drag handle element in the
+		// template, so the browser sets currentTarget to that HTMLElement.
 		const handle = e.currentTarget as HTMLElement;
 		const startX = e.clientX;
 		const startY = e.clientY;

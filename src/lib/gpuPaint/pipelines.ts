@@ -28,7 +28,7 @@ export function createPaintPipelines(deps: {
 	docViewSlot: any;
 	strokeViewSlot: any;
 	/** Mutable views rebound after document resize. */
-	views: { docView: unknown; strokeView: unknown };
+	views: { docView: any; strokeView: any };
 }) {
 	const {
 		root,
@@ -186,7 +186,7 @@ export function createPaintPipelines(deps: {
 		});
 
 		return root
-			.with(strokeViewSlot, views.strokeView as any)
+			.with(strokeViewSlot, views.strokeView)
 			.createRenderPipeline({
 				attribs: { ...stampLayout.attrib },
 				vertex: airbrushVertex,
@@ -214,7 +214,7 @@ export function createPaintPipelines(deps: {
 			return d.vec4f(s.rgb * opacity, s.a * opacity);
 		});
 
-		return root.with(strokeViewSlot, views.strokeView as any).createRenderPipeline({
+		return root.with(strokeViewSlot, views.strokeView).createRenderPipeline({
 			vertex: common.fullScreenTriangle,
 			fragment: compositeFragment,
 			targets: {
@@ -285,8 +285,8 @@ export function createPaintPipelines(deps: {
 		});
 
 		return root
-			.with(docViewSlot, views.docView as any)
-			.with(strokeViewSlot, views.strokeView as any)
+			.with(docViewSlot, views.docView)
+			.with(strokeViewSlot, views.strokeView)
 			.createRenderPipeline({
 				vertex: common.fullScreenTriangle,
 				fragment: presentFragment,

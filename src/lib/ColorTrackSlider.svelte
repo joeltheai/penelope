@@ -46,18 +46,21 @@
 
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
+		// SAFETY: bound to the track element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		setValue(valueFromClientX(e.clientX));
 		el.setPointerCapture(e.pointerId);
 	}
 
 	function onPointerMove(e: PointerEvent) {
+		// SAFETY: bound to the track element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (!el.hasPointerCapture(e.pointerId)) return;
 		setValue(valueFromClientX(e.clientX));
 	}
 
 	function onPointerUp(e: PointerEvent) {
+		// SAFETY: bound to the track element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (el.hasPointerCapture(e.pointerId)) {
 			el.releasePointerCapture(e.pointerId);

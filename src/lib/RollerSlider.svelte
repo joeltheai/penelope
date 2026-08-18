@@ -49,6 +49,7 @@
 
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
+		// SAFETY: bound to the roller element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		showPreview();
 		value = valueFromPointer(e.clientX, e.clientY, el);
@@ -56,12 +57,14 @@
 	}
 
 	function onPointerMove(e: PointerEvent) {
+		// SAFETY: bound to the roller element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (!el.hasPointerCapture(e.pointerId)) return;
 		value = valueFromPointer(e.clientX, e.clientY, el);
 	}
 
 	function onPointerUp(e: PointerEvent) {
+		// SAFETY: bound to the roller element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (el.hasPointerCapture(e.pointerId)) {
 			el.releasePointerCapture(e.pointerId);

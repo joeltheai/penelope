@@ -67,10 +67,12 @@
 	let panelEl: HTMLElement | undefined = $state();
 
 	$effect(() => {
-		if (typeof window === 'undefined') return;
+		if (!('window' in globalThis)) return;
 		try {
 			const raw = localStorage.getItem(PANEL_KEY);
 			if (raw) {
+				// SAFETY: PANEL_KEY is only ever written by savePanel() as { x, y } numbers;
+				// JSON.parse returns `any`, so assert the stored shape.
 				const saved = JSON.parse(raw) as { x: number; y: number };
 				panelX = saved.x;
 				panelY = saved.y;
@@ -104,6 +106,7 @@
 
 	function onPanelDragStart(e: PointerEvent) {
 		if (e.button !== 0) return;
+		// SAFETY: bound to the panel drag handle element in the template; currentTarget is that HTMLElement.
 		const handle = e.currentTarget as HTMLElement;
 		const startX = e.clientX;
 		const startY = e.clientY;
@@ -142,6 +145,8 @@
 	}
 
 	function onBrushChange(event: Event) {
+		// SAFETY: bound to the brush <select> in the template, whose options are exactly the
+		// BRUSHES ids; currentTarget is that select element, so its value is a BrushKind.
 		const id = (event.currentTarget as HTMLSelectElement).value as BrushKind;
 		const next = BRUSHES.find((item) => item.id === id);
 		if (next) selectBrush(next);

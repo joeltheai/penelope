@@ -61,6 +61,7 @@
 	function onResizePointerDown(e: PointerEvent) {
 		if (e.button !== 0 && e.pointerType === 'mouse') return;
 		e.preventDefault();
+		// SAFETY: bound to the resize surface element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		el.setPointerCapture(e.pointerId);
 
@@ -90,6 +91,7 @@
 	}
 
 	function onResizePointerMove(e: PointerEvent) {
+		// SAFETY: bound to the resize surface element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (resizePanCam && el.hasPointerCapture(e.pointerId)) {
 			onPan(e.clientX - resizePanCam.lastX, e.clientY - resizePanCam.lastY);
@@ -117,6 +119,7 @@
 	}
 
 	function onResizePointerUp(e: PointerEvent) {
+		// SAFETY: bound to the resize surface element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (el.hasPointerCapture(e.pointerId)) {
 			el.releasePointerCapture(e.pointerId);
