@@ -11,6 +11,7 @@ export type {
 	LassoMode,
 	LassoOptions,
 	RasterPatch,
+	RasterHistoryEntry,
 	Rect,
 	ViewState
 } from './types';

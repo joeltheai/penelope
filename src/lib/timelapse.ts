@@ -37,9 +37,10 @@ function putPixels(
 	x = 0,
 	y = 0
 ) {
-	const copy = new Uint8ClampedArray(pixels.byteLength);
-	copy.set(pixels);
-	context.putImageData(new ImageData(copy, width, height), x, y);
+	// SAFETY: callers pass freshly copied Uint8Arrays (baseline / frame payloads) that fully
+	// own an ArrayBuffer; ImageData requires an ArrayBuffer-backed clamped view.
+	const clamped = new Uint8ClampedArray(pixels.buffer as ArrayBuffer, pixels.byteOffset, pixels.byteLength);
+	context.putImageData(new ImageData(clamped, width, height), x, y);
 }
 
 export async function renderTimelapse(
@@ -104,15 +105,17 @@ export async function renderTimelapse(
 	try {
 		for (let i = 0; i < startHoldFrames; i++) await emitFrame();
 		for (const frame of data.frames) {
-			const after = await history.getAfterPatch(frame.id);
-			putPixels(
-				documentContext,
-				after,
-				frame.bounds.w,
-				frame.bounds.h,
-				frame.bounds.x,
-				frame.bounds.y
-			);
+			const regions = await history.getAfterPatch(frame.id);
+			for (const region of regions) {
+				putPixels(
+					documentContext,
+					region.pixels,
+					region.bounds.w,
+					region.bounds.h,
+					region.bounds.x,
+					region.bounds.y
+				);
+			}
 			await emitFrame();
 		}
 		for (let i = 0; i < endHoldFrames; i++) await emitFrame();

@@ -9,13 +9,6 @@ export const FLOATS_PER_VERT = 7;
 export const VERTS_PER_STAMP = 6;
 export const MAX_VERT_FLOATS = MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP * FLOATS_PER_VERT;
 
-/** Soft cap on undoable strokes (also bounded by HOT_PIXEL_BUDGET). */
-export const MAX_HISTORY = 50;
-/**
- * Max GPU pixels retained for undo/redo patches (prev+after counted separately).
- * ~32M px ≈ 128 MB RGBA — enough for many small strokes, few full-canvas ones.
- */
-export const HOT_PIXEL_BUDGET = 32_000_000;
 /**
  * Per-dab airbrush flow. Repeated dabs approach the pressure opacity cap,
  * matching Krita's non-incremental Alpha Darken wash behavior.

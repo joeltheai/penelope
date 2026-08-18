@@ -36,6 +36,9 @@
 		updateHasPressure
 	} from '$lib/penPressure';
 
+	// SAFETY: these bindable defaults are valid members of their prop types — 'pen' is a
+	// BrushKind, the lasso object matches LassoOptions, and null / EMPTY_HISTORY_STATE are
+	// the unset sentinels until the parent supplies real values.
 	let {
 		color = $bindable('#1a6cff'),
 		size = $bindable(8),
@@ -201,6 +204,8 @@
 		let history: PersistentHistory | null = null;
 		let historyQueue: Promise<void> = Promise.resolve();
 		let historyBusy = false;
+		let historyOperationBusy = false;
+		let pendingHistoryWrites = 0;
 		let replaying = false;
 		let previewAbort: AbortController | null = null;
 		let replaySession: HistoryReplaySession | null = null;
@@ -400,7 +405,7 @@
 					color
 				);
 				gpu.flushStamps(color);
-				present();
+				schedulePresent();
 			}, 33);
 		}
 
@@ -434,6 +439,10 @@
 			canRedo = !historyBusy && next.canRedo;
 		}
 
+		function refreshHistoryBusy() {
+			historyBusy = historyOperationBusy || pendingHistoryWrites > 0;
+		}
+
 		function syncZoom() {
 			zoom = view.zoom;
 			camX = view.x;
@@ -444,18 +453,19 @@
 
 		async function runHistoryOperation(operation: () => Promise<void>) {
 			if (resizeMode || !gpu || !history || drawing || strokeActive || historyBusy) return;
-			historyBusy = true;
+			historyOperationBusy = true;
+			refreshHistoryBusy();
 			historyError = null;
 			syncHistoryFlags();
 			try {
 				await historyQueue;
 				await operation();
-				gpu.clearHotHistory();
 				present();
 			} catch (error) {
 				historyError = error instanceof Error ? error.message : 'History operation failed';
 			} finally {
-				historyBusy = false;
+				historyOperationBusy = false;
+				refreshHistoryBusy();
 				syncHistoryFlags();
 			}
 		}
@@ -605,7 +615,8 @@
 			branchId?: string;
 		}) {
 			if (!history || historyBusy) return;
-			historyBusy = true;
+			historyOperationBusy = true;
+			refreshHistoryBusy();
 			exportProgress = 0;
 			historyError = null;
 			syncHistoryFlags();
@@ -622,7 +633,8 @@
 			} catch (error) {
 				historyError = error instanceof Error ? error.message : 'Timelapse export failed';
 			} finally {
-				historyBusy = false;
+				historyOperationBusy = false;
+				refreshHistoryBusy();
 				exportProgress = null;
 				syncHistoryFlags();
 			}
@@ -648,7 +660,8 @@
 
 		async function commitResizeMode() {
 			if (!gpu || !history || drawing || strokeActive || historyBusy) return;
-			historyBusy = true;
+			historyOperationBusy = true;
+			refreshHistoryBusy();
 			historyError = null;
 			syncHistoryFlags();
 			try {
@@ -672,7 +685,8 @@
 			} catch (error) {
 				historyError = error instanceof Error ? error.message : 'Canvas resize failed';
 			} finally {
-				historyBusy = false;
+				historyOperationBusy = false;
+				refreshHistoryBusy();
 				syncHistoryFlags();
 			}
 		}
@@ -703,13 +717,13 @@
 			if (!strokeActive || !gpu || !history) return;
 			stopAirbrushTimer();
 			const patchPromise = gpu.endStroke(opacity);
-			historyBusy = true;
+			pendingHistoryWrites++;
+			refreshHistoryBusy();
 			syncHistoryFlags();
 			historyQueue = historyQueue
 				.then(async () => {
 					const patch = await patchPromise;
 					if (patch) await history?.append(patch);
-					gpu?.clearHotHistory();
 					syncHistoryFlags();
 				})
 				.catch((error) => {
@@ -717,12 +731,13 @@
 					syncHistoryFlags();
 				})
 				.finally(() => {
-					historyBusy = false;
+					pendingHistoryWrites = Math.max(0, pendingHistoryWrites - 1);
+					refreshHistoryBusy();
 					syncHistoryFlags();
 				});
 			strokeActive = false;
 			lastAirbrush = null;
-			present();
+			schedulePresent();
 			syncHistoryFlags();
 		}
 
@@ -796,8 +811,7 @@
 				penState.hasPressure = true;
 			}
 
-			const samples =
-				typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+			const samples = e.getCoalescedEvents?.() ?? [];
 			const events = samples.length > 0 ? samples : [e];
 
 			// Queue all coalesced samples first, then one GPU flush + present.
@@ -813,7 +827,7 @@
 				queuePaintAt(ce.clientX, ce.clientY, sizeP, opacP);
 			}
 			gpu.flushStamps(color);
-			present();
+			schedulePresent();
 		}
 
 		function wantsRotate(e: PointerEvent) {
@@ -821,7 +835,7 @@
 		}
 
 		function onPointerDown(e: PointerEvent) {
-			if (suspended || resizeMode || historyBusy) return;
+			if (suspended || resizeMode || historyOperationBusy) return;
 			e.preventDefault();
 			const active = document.activeElement;
 			if (active instanceof HTMLElement && active !== surface) active.blur();
@@ -878,7 +892,7 @@
 				lastPaintScreen = { x: e.clientX, y: e.clientY };
 				queuePaintAt(e.clientX, e.clientY, sizeP, opacP);
 				gpu?.flushStamps(color);
-				present();
+				schedulePresent();
 			}
 		}
 

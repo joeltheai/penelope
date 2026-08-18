@@ -1,4 +1,4 @@
-import type { RasterPatch, Rect } from '$lib/gpuPaint';
+import type { RasterHistoryEntry, Rect } from '$lib/gpuPaint';
 
 const DB_NAME = 'penelope-history';
 const DB_VERSION = 2;
@@ -22,6 +22,15 @@ type StoredBaseline = {
 
 type StoredPatch = {
 	nodeId: string;
+	regions: Array<{
+		bounds: Rect;
+		before: ArrayBuffer;
+		after: ArrayBuffer;
+	}>;
+};
+
+type LegacyStoredPatch = {
+	nodeId: string;
 	before: ArrayBuffer;
 	after: ArrayBuffer;
 };
@@ -32,6 +41,8 @@ export type HistoryNode = {
 	branchId: string;
 	createdAt: number;
 	bounds: Rect;
+	/** Exact raw before+after pixel payload, excluding small IndexedDB record overhead. */
+	byteLength?: number;
 };
 
 export type HistoryBranch = {
@@ -57,6 +68,11 @@ export type HistoryGraphData = {
 	cursorNodeId: string | null;
 	nodes: HistoryNode[];
 	branches: HistoryGraphBranch[];
+	storage: {
+		baselineBytes: number;
+		patchBytes: number;
+		totalBytes: number;
+	};
 };
 
 export type HistorySnapshot = {
@@ -155,6 +171,9 @@ async function openDatabase(): Promise<IDBDatabase> {
 					const projectStore = request.transaction.objectStore('project');
 					const legacyRequest = projectStore.get(PROJECT_ID);
 					legacyRequest.onsuccess = () => {
+						// SAFETY: the project store is written by this app with the v1 schema above; legacy
+						// records may also carry a stray `baseline` blob that this upgrade migrates into the
+						// dedicated baseline store. IDBRequest.result is `any`, so narrow it to that shape.
 						const legacy = legacyRequest.result as
 							| (StoredProject & { baseline?: ArrayBuffer })
 							| undefined;
@@ -176,10 +195,20 @@ async function openDatabase(): Promise<IDBDatabase> {
 	});
 }
 
-function copyBuffer(bytes: Uint8Array): ArrayBuffer {
-	const copy = new Uint8Array(bytes.byteLength);
-	copy.set(bytes);
-	return copy.buffer;
+function ownedBuffer(bytes: Uint8Array): ArrayBuffer {
+	// SAFETY: the ownership check guarantees `bytes` wraps its whole buffer (the else-branch
+	// already yields a fresh ArrayBuffer via slice().buffer), so the buffer is an ArrayBuffer.
+	return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+		? (bytes.buffer as ArrayBuffer)
+		: bytes.slice().buffer;
+}
+
+function unionBounds(patches: RasterHistoryEntry): Rect {
+	const x0 = Math.min(...patches.map((patch) => patch.bounds.x));
+	const y0 = Math.min(...patches.map((patch) => patch.bounds.y));
+	const x1 = Math.max(...patches.map((patch) => patch.bounds.x + patch.bounds.w));
+	const y1 = Math.max(...patches.map((patch) => patch.bounds.y + patch.bounds.h));
+	return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 export function applyRasterPatch(target: Uint8Array, docWidth: number, bounds: Rect, patch: Uint8Array) {
@@ -196,6 +225,9 @@ function makeWhiteDocument(width: number, height: number) {
 }
 
 export class PersistentHistory {
+	private readonly pathCache = new Map<string, { tipNodeId: string | null; path: HistoryNode[] }>();
+	private snapshotCacheToken = {};
+
 	private constructor(
 		private readonly db: IDBDatabase,
 		private project: StoredProject,
@@ -207,6 +239,9 @@ export class PersistentHistory {
 	static async open(width: number, height: number): Promise<PersistentHistory> {
 		const db = await openDatabase();
 		const tx = db.transaction(['project', 'baseline', 'nodes', 'branches'], 'readonly');
+		// SAFETY: store schemas are fixed in openDatabase(): 'project'/'baseline' hold one record
+		// under PROJECT_ID and 'nodes'/'branches' hold HistoryNode[] / HistoryBranch[].
+		// IDBRequest.result is `any`, so assert the known record shapes.
 		const [storedProject, storedBaseline, storedNodes, storedBranches] = await Promise.all([
 			requestResult(tx.objectStore('project').get(PROJECT_ID) as IDBRequest<StoredProject | undefined>),
 			requestResult(
@@ -272,6 +307,8 @@ export class PersistentHistory {
 	getPath(branchId = this.project.activeBranchId): HistoryNode[] {
 		const branch = this.branches.get(branchId);
 		if (!branch) return [];
+		const cached = this.pathCache.get(branchId);
+		if (cached?.tipNodeId === branch.tipNodeId) return cached.path;
 		const reverse: HistoryNode[] = [];
 		let id = branch.tipNodeId;
 		while (id) {
@@ -280,7 +317,14 @@ export class PersistentHistory {
 			reverse.push(node);
 			id = node.parentId;
 		}
-		return reverse.reverse();
+		const path = reverse.reverse();
+		this.pathCache.set(branchId, { tipNodeId: branch.tipNodeId, path });
+		return path;
+	}
+
+	/** Stable across appends, replaced when the document baseline is reset. */
+	getSnapshotCacheToken() {
+		return this.snapshotCacheToken;
 	}
 
 	getState(): HistoryUiState {
@@ -342,18 +386,60 @@ export class PersistentHistory {
 			activeBranchId: this.project.activeBranchId,
 			cursorNodeId: this.project.cursorNodeId,
 			nodes,
-			branches
+			branches,
+			storage: {
+				baselineBytes: this.baseline.byteLength,
+				patchBytes: nodes.reduce(
+					(sum, node) => sum + (node.byteLength ?? node.bounds.w * node.bounds.h * 8),
+					0
+				),
+				totalBytes:
+					this.baseline.byteLength +
+					nodes.reduce(
+						(sum, node) => sum + (node.byteLength ?? node.bounds.w * node.bounds.h * 8),
+						0
+					)
+			}
 		};
 	}
 
-	private async getStoredPatch(nodeId: string): Promise<StoredPatch> {
+	private async getStoredPatch(nodeId: string): Promise<StoredPatch | LegacyStoredPatch> {
 		const tx = this.db.transaction('patches', 'readonly');
+		// SAFETY: the 'patches' store holds StoredPatch (v2) or LegacyStoredPatch (v1) records
+		// keyed by nodeId; IDBRequest.result is `any`, so assert the known record shape.
 		const patch = await requestResult(
-			tx.objectStore('patches').get(nodeId) as IDBRequest<StoredPatch | undefined>
+			tx.objectStore('patches').get(nodeId) as IDBRequest<
+				StoredPatch | LegacyStoredPatch | undefined
+			>
 		);
 		await transactionDone(tx);
 		if (!patch) throw new Error(`Missing history patch ${nodeId}`);
 		return patch;
+	}
+
+	private async getStoredPatches(nodeIds: string[]) {
+		if (nodeIds.length === 0) return [];
+		const tx = this.db.transaction('patches', 'readonly');
+		const store = tx.objectStore('patches');
+		// SAFETY: same 'patches' store schema as getStoredPatch; IDBRequest.result is `any`.
+		const patches = await Promise.all(
+			nodeIds.map((nodeId) =>
+				requestResult(
+					store.get(nodeId) as IDBRequest<StoredPatch | LegacyStoredPatch | undefined>
+				)
+			)
+		);
+		await transactionDone(tx);
+		return patches.map((patch, index) => {
+			if (!patch) throw new Error(`Missing history patch ${nodeIds[index]}`);
+			return patch;
+		});
+	}
+
+	private storedRegions(node: HistoryNode, patch: StoredPatch | LegacyStoredPatch) {
+		return 'regions' in patch
+			? patch.regions
+			: [{ bounds: node.bounds, before: patch.before, after: patch.after }];
 	}
 
 	private async saveProject(project: StoredProject) {
@@ -373,9 +459,20 @@ export class PersistentHistory {
 			reverse.push(node);
 			id = node.parentId;
 		}
-		for (const node of reverse.reverse()) {
-			const patch = await this.getStoredPatch(node.id);
-			applyRasterPatch(pixels, this.project.width, node.bounds, new Uint8Array(patch.after));
+		const path = reverse.reverse();
+		for (let start = 0; start < path.length; start += 16) {
+			const nodes = path.slice(start, start + 16);
+			const patches = await this.getStoredPatches(nodes.map((node) => node.id));
+			for (let index = 0; index < nodes.length; index++) {
+				for (const region of this.storedRegions(nodes[index]!, patches[index]!)) {
+					applyRasterPatch(
+						pixels,
+						this.project.width,
+						region.bounds,
+						new Uint8Array(region.after)
+					);
+				}
+			}
 		}
 		return pixels;
 	}
@@ -406,11 +503,13 @@ export class PersistentHistory {
 			const node = this.nodes.get(current);
 			if (!node) throw new Error(`Missing history node ${current}`);
 			const patch = await this.getStoredPatch(node.id);
-			steps.push({
-				bounds: node.bounds,
-				pixels: new Uint8Array(patch.before),
-				rollback: new Uint8Array(patch.after)
-			});
+			for (const region of this.storedRegions(node, patch)) {
+				steps.push({
+					bounds: region.bounds,
+					pixels: new Uint8Array(region.before),
+					rollback: new Uint8Array(region.after)
+				});
+			}
 			current = node.parentId;
 		}
 		const commonAncestor = current;
@@ -425,11 +524,13 @@ export class PersistentHistory {
 		}
 		for (const node of forward.reverse()) {
 			const patch = await this.getStoredPatch(node.id);
-			steps.push({
-				bounds: node.bounds,
-				pixels: new Uint8Array(patch.after),
-				rollback: new Uint8Array(patch.before)
-			});
+			for (const region of this.storedRegions(node, patch)) {
+				steps.push({
+					bounds: region.bounds,
+					pixels: new Uint8Array(region.after),
+					rollback: new Uint8Array(region.before)
+				});
+			}
 		}
 
 		const applied: typeof steps = [];
@@ -515,7 +616,8 @@ export class PersistentHistory {
 		return branch;
 	}
 
-	async append(patch: RasterPatch): Promise<{ node: HistoryNode; forked: boolean }> {
+	async append(patches: RasterHistoryEntry): Promise<{ node: HistoryNode; forked: boolean }> {
+		if (patches.length === 0) throw new Error('Cannot append an empty history entry');
 		let forked = false;
 		const active = this.branches.get(this.project.activeBranchId);
 		if (!active) throw new Error('Active history branch is missing');
@@ -531,12 +633,19 @@ export class PersistentHistory {
 			parentId: this.project.cursorNodeId,
 			branchId: branch.id,
 			createdAt: now,
-			bounds: { ...patch.bounds }
+			bounds: unionBounds(patches),
+			byteLength: patches.reduce(
+				(sum, patch) => sum + patch.before.byteLength + patch.after.byteLength,
+				0
+			)
 		};
 		const storedPatch: StoredPatch = {
 			nodeId: node.id,
-			before: copyBuffer(patch.before),
-			after: copyBuffer(patch.after)
+			regions: patches.map((patch) => ({
+				bounds: { ...patch.bounds },
+				before: ownedBuffer(patch.before),
+				after: ownedBuffer(patch.after)
+			}))
 		};
 		branch.tipNodeId = node.id;
 		branch.updatedAt = now;
@@ -662,7 +771,7 @@ export class PersistentHistory {
 			cursorNodeId: null,
 			nextBranchNumber: 1
 		};
-		const nextBaseline = copyBuffer(baseline);
+		const nextBaseline = ownedBuffer(baseline);
 
 		const tx = this.db.transaction(
 			['project', 'baseline', 'nodes', 'patches', 'branches'],
@@ -680,6 +789,8 @@ export class PersistentHistory {
 		await transactionDone(tx);
 		this.project = nextProject;
 		this.baseline = nextBaseline;
+		this.snapshotCacheToken = {};
+		this.pathCache.clear();
 		this.nodes.clear();
 		this.branches.clear();
 		this.branches.set(main.id, main);
@@ -695,8 +806,13 @@ export class PersistentHistory {
 	}
 
 	async getAfterPatch(nodeId: string) {
+		const node = this.nodes.get(nodeId);
+		if (!node) throw new Error(`Missing history node ${nodeId}`);
 		const patch = await this.getStoredPatch(nodeId);
-		return new Uint8Array(patch.after);
+		return this.storedRegions(node, patch).map((region) => ({
+			bounds: region.bounds,
+			pixels: new Uint8Array(region.after)
+		}));
 	}
 
 	getBaselinePixels() {
@@ -704,11 +820,28 @@ export class PersistentHistory {
 	}
 
 	async getRasterPatch(nodeId: string) {
+		const node = this.nodes.get(nodeId);
+		if (!node) throw new Error(`Missing history node ${nodeId}`);
 		const patch = await this.getStoredPatch(nodeId);
-		return {
-			before: new Uint8Array(patch.before),
-			after: new Uint8Array(patch.after)
-		};
+		return this.storedRegions(node, patch).map((region) => ({
+			bounds: region.bounds,
+			before: new Uint8Array(region.before),
+			after: new Uint8Array(region.after)
+		}));
+	}
+
+	async getRasterPatches(nodeIds: string[]) {
+		const patches = await this.getStoredPatches(nodeIds);
+		return patches.map((patch, index) => {
+			const nodeId = nodeIds[index]!;
+			const node = this.nodes.get(nodeId);
+			if (!node) throw new Error(`Missing history node ${nodeId}`);
+			return this.storedRegions(node, patch).map((region) => ({
+				bounds: region.bounds,
+				before: new Uint8Array(region.before),
+				after: new Uint8Array(region.after)
+			}));
+		});
 	}
 
 	close() {

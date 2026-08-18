@@ -14,8 +14,13 @@ type PreviewSurface = {
 
 const snapshotCaches = new WeakMap<
 	PersistentHistory,
-	{ revision: string; blobs: Map<string, Blob> }
+	{ token: object; size: string; blobs: Map<string, Blob> }
 >();
+
+const MAX_CACHED_SNAPSHOTS = 48;
+const MAX_REPLAY_CACHE_BYTES = 32 * 1024 * 1024;
+
+type RasterPatchBatch = Awaited<ReturnType<PersistentHistory['getRasterPatch']>>;
 
 function snapshotKey(nodeId: string | null) {
 	return nodeId ?? '__root__';
@@ -59,9 +64,10 @@ function putPixels(
 	x = 0,
 	y = 0
 ) {
-	const copy = new Uint8ClampedArray(pixels.byteLength);
-	copy.set(pixels);
-	context.putImageData(new ImageData(copy, width, height), x, y);
+	// SAFETY: callers pass freshly copied Uint8Arrays (baseline / region payloads) that fully
+	// own an ArrayBuffer; ImageData requires an ArrayBuffer-backed clamped view.
+	const clamped = new Uint8ClampedArray(pixels.buffer as ArrayBuffer, pixels.byteOffset, pixels.byteLength);
+	context.putImageData(new ImageData(clamped, width, height), x, y);
 }
 
 function drawBaseline(
@@ -86,8 +92,8 @@ function drawPatch(
 	bounds: { x: number; y: number; w: number; h: number },
 	pixels: Uint8Array
 ) {
-	surface.scratch.width = bounds.w;
-	surface.scratch.height = bounds.h;
+	if (surface.scratch.width !== bounds.w) surface.scratch.width = bounds.w;
+	if (surface.scratch.height !== bounds.h) surface.scratch.height = bounds.h;
 	putPixels(surface.scratchContext, pixels, bounds.w, bounds.h);
 	surface.context.drawImage(
 		surface.scratch,
@@ -107,9 +113,18 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 		canvas.toBlob(
 			(blob) => (blob ? resolve(blob) : reject(new Error('Could not encode history snapshot'))),
 			'image/webp',
-			0.94
+			0.82
 		);
 	});
+}
+
+async function drawSnapshotBlob(surface: PreviewSurface, blob: Blob) {
+	const bitmap = await createImageBitmap(blob);
+	try {
+		surface.context.drawImage(bitmap, 0, 0, surface.canvas.width, surface.canvas.height);
+	} finally {
+		bitmap.close();
+	}
 }
 
 function throwIfAborted(signal?: AbortSignal) {
@@ -122,51 +137,75 @@ export async function renderHistorySnapshots(
 	nodeIds: Array<string | null>,
 	options: { maxWidth?: number; maxHeight?: number; signal?: AbortSignal } = {}
 ): Promise<HistorySnapshot[]> {
-	const maxWidth = options.maxWidth ?? 640;
-	const maxHeight = options.maxHeight ?? 420;
+	const maxWidth = options.maxWidth ?? 320;
+	const maxHeight = options.maxHeight ?? 210;
 	const requested = new Set(nodeIds.map(snapshotKey));
 	const existing = snapshotCaches.get(history);
-	const cacheRevision = `${graph.revision}:${maxWidth}x${maxHeight}`;
+	const token = history.getSnapshotCacheToken();
+	const sizeKey = `${maxWidth}x${maxHeight}`;
 	const cache =
-		existing?.revision === cacheRevision
+		existing?.token === token && existing.size === sizeKey
 			? existing
-			: { revision: cacheRevision, blobs: new Map<string, Blob>() };
+			: { token, size: sizeKey, blobs: new Map<string, Blob>() };
 	if (cache !== existing) snapshotCaches.set(history, cache);
 
-	const missing = new Set([...requested].filter((key) => !cache.blobs.has(key)));
-	if (missing.size) {
+	if (!cache.blobs.has('__root__')) {
 		throwIfAborted(options.signal);
 		const surface = createSurface(graph.width, graph.height, maxWidth, maxHeight);
 		drawBaseline(surface, history.getBaselinePixels(), graph.width, graph.height);
-		if (missing.has('__root__')) {
-			cache.blobs.set('__root__', await canvasToBlob(surface.canvas));
-			missing.delete('__root__');
-		}
+		cache.blobs.set('__root__', await canvasToBlob(surface.canvas));
+	}
 
-		const children = new Map<string | null, typeof graph.nodes>();
-		const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
-		for (const node of graph.nodes) {
-			const list = children.get(node.parentId) ?? [];
-			list.push(node);
-			children.set(node.parentId, list);
-		}
+	const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+	const depthMemo = new Map<string, number>();
+	const depthOf = (nodeId: string): number => {
+		const cached = depthMemo.get(nodeId);
+		if (cached !== undefined) return cached;
+		const node = nodesById.get(nodeId);
+		const depth = node?.parentId ? depthOf(node.parentId) + 1 : 1;
+		depthMemo.set(nodeId, depth);
+		return depth;
+	};
+	const missingNodeIds = nodeIds
+		.filter((nodeId): nodeId is string => nodeId !== null && !cache.blobs.has(nodeId))
+		.sort((a, b) => depthOf(a) - depthOf(b));
 
-		const visit = async (nodeId: string) => {
+	for (const targetId of missingNodeIds) {
+		throwIfAborted(options.signal);
+		// SAFETY: chain collects ancestor HistoryNodes up to the first cached snapshot.
+		const chain = [] as typeof graph.nodes;
+		let cursor: string | null = targetId;
+		while (cursor && !cache.blobs.has(cursor)) {
+			const node = nodesById.get(cursor);
+			if (!node) break;
+			chain.push(node);
+			cursor = node.parentId;
+		}
+		const baseBlob = cache.blobs.get(snapshotKey(cursor));
+		if (!baseBlob) continue;
+
+		const surface = createSurface(graph.width, graph.height, maxWidth, maxHeight);
+		await drawSnapshotBlob(surface, baseBlob);
+		const forward = chain.reverse();
+		for (let start = 0; start < forward.length; start += 16) {
 			throwIfAborted(options.signal);
-			const node = nodesById.get(nodeId);
-			if (!node) return;
-			const patch = await history.getRasterPatch(node.id);
-			drawPatch(surface, node.bounds, patch.after);
-			const key = snapshotKey(node.id);
-			if (missing.has(key)) {
-				cache.blobs.set(key, await canvasToBlob(surface.canvas));
-				missing.delete(key);
+			const nodes = forward.slice(start, start + 16);
+			const patches = await history.getRasterPatches(nodes.map((node) => node.id));
+			for (const regions of patches) {
+				for (const region of regions) drawPatch(surface, region.bounds, region.after);
 			}
-			for (const child of children.get(node.id) ?? []) await visit(child.id);
-			drawPatch(surface, node.bounds, patch.before);
-		};
+		}
+		cache.blobs.set(targetId, await canvasToBlob(surface.canvas));
+	}
 
-		for (const rootNode of children.get(null) ?? []) await visit(rootNode.id);
+	// Keep recent checkpoints for fast incremental opens without retaining an
+	// unbounded thumbnail archive during multi-hour sessions.
+	if (cache.blobs.size > MAX_CACHED_SNAPSHOTS) {
+		for (const key of cache.blobs.keys()) {
+			if (cache.blobs.size <= MAX_CACHED_SNAPSHOTS) break;
+			if (key === '__root__' || requested.has(key)) continue;
+			cache.blobs.delete(key);
+		}
 	}
 
 	const size = fitSize(graph.width, graph.height, maxWidth, maxHeight);
@@ -181,10 +220,8 @@ export class HistoryReplaySession {
 	index = 0;
 	private readonly context: CanvasRenderingContext2D;
 	private readonly path;
-	private readonly patchCache = new Map<
-		string,
-		{ before: Uint8Array; after: Uint8Array }
-	>();
+	private readonly patchCache = new Map<string, RasterPatchBatch>();
+	private patchCacheBytes = 0;
 
 	constructor(
 		private readonly history: PersistentHistory,
@@ -207,29 +244,108 @@ export class HistoryReplaySession {
 
 	private async patch(nodeId: string) {
 		const cached = this.patchCache.get(nodeId);
-		if (cached) return cached;
+		if (cached) {
+			this.patchCache.delete(nodeId);
+			this.patchCache.set(nodeId, cached);
+			return cached;
+		}
 		const patch = await this.history.getRasterPatch(nodeId);
-		this.patchCache.set(nodeId, patch);
+		this.rememberPatch(nodeId, patch);
 		return patch;
+	}
+
+	private rememberPatch(nodeId: string, patch: RasterPatchBatch) {
+		const existing = this.patchCache.get(nodeId);
+		if (existing) {
+			this.patchCacheBytes -= existing.reduce(
+				(sum, region) => sum + region.before.byteLength + region.after.byteLength,
+				0
+			);
+			this.patchCache.delete(nodeId);
+		}
+		this.patchCache.set(nodeId, patch);
+		this.patchCacheBytes += patch.reduce(
+			(sum, region) => sum + region.before.byteLength + region.after.byteLength,
+			0
+		);
+		while (this.patchCacheBytes > MAX_REPLAY_CACHE_BYTES && this.patchCache.size > 1) {
+			// SAFETY: eviction only runs while patchCache.size > 1, so the first key exists and is a
+			// nodeId string (Map preserves insertion order; only nodeId keys are ever set).
+			const oldestId = this.patchCache.keys().next().value as string;
+			const oldest = this.patchCache.get(oldestId)!;
+			this.patchCache.delete(oldestId);
+			this.patchCacheBytes -= oldest.reduce(
+				(sum, region) => sum + region.before.byteLength + region.after.byteLength,
+				0
+			);
+		}
+	}
+
+	private async patches(nodeIds: string[]) {
+		const result = Array.from<RasterPatchBatch>({ length: nodeIds.length });
+		const missingIds: string[] = [];
+		const missingIndices: number[] = [];
+		for (let index = 0; index < nodeIds.length; index++) {
+			const nodeId = nodeIds[index]!;
+			const cached = this.patchCache.get(nodeId);
+			if (cached) result[index] = await this.patch(nodeId);
+			else {
+				missingIds.push(nodeId);
+				missingIndices.push(index);
+			}
+		}
+		if (missingIds.length > 0) {
+			const loaded = await this.history.getRasterPatches(missingIds);
+			for (let index = 0; index < loaded.length; index++) {
+				const patch = loaded[index]!;
+				const nodeId = missingIds[index]!;
+				this.rememberPatch(nodeId, patch);
+				result[missingIndices[index]!] = patch;
+			}
+		}
+		return result;
 	}
 
 	async seek(index: number, signal?: AbortSignal) {
 		const target = Math.max(0, Math.min(this.total, Math.round(index)));
 		while (this.index > target) {
 			throwIfAborted(signal);
-			const node = this.path[this.index - 1]!;
-			const patch = await this.patch(node.id);
-			throwIfAborted(signal);
-			putPixels(this.context, patch.before, node.bounds.w, node.bounds.h, node.bounds.x, node.bounds.y);
-			this.index--;
+			const count = Math.min(16, this.index - target);
+			const nodes = Array.from({ length: count }, (_, offset) => this.path[this.index - 1 - offset]!);
+			const batch = await this.patches(nodes.map((node) => node.id));
+			for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex++) {
+				throwIfAborted(signal);
+				for (const patch of batch[nodeIndex]!) {
+					putPixels(
+						this.context,
+						patch.before,
+						patch.bounds.w,
+						patch.bounds.h,
+						patch.bounds.x,
+						patch.bounds.y
+					);
+				}
+				this.index--;
+			}
 		}
 		while (this.index < target) {
 			throwIfAborted(signal);
-			const node = this.path[this.index]!;
-			const patch = await this.patch(node.id);
-			throwIfAborted(signal);
-			putPixels(this.context, patch.after, node.bounds.w, node.bounds.h, node.bounds.x, node.bounds.y);
-			this.index++;
+			const nodes = this.path.slice(this.index, Math.min(target, this.index + 16));
+			const batch = await this.patches(nodes.map((node) => node.id));
+			for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex++) {
+				throwIfAborted(signal);
+				for (const patch of batch[nodeIndex]!) {
+					putPixels(
+						this.context,
+						patch.after,
+						patch.bounds.w,
+						patch.bounds.h,
+						patch.bounds.x,
+						patch.bounds.y
+					);
+				}
+				this.index++;
+			}
 		}
 		return this.index;
 	}

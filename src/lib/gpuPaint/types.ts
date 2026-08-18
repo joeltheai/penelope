@@ -20,6 +20,9 @@ export type RasterPatch = {
 	after: Uint8Array;
 };
 
+/** One committed stroke, split into non-overlapping dirty regions. */
+export type RasterHistoryEntry = RasterPatch[];
+
 export type LassoMode = 'fill' | 'pull';
 
 export type LassoOptions = {
@@ -45,19 +48,13 @@ export type GpuPaint = {
 	setBrush: (brush: BrushKind) => void;
 	setLassoOptions: (opts: Partial<LassoOptions>) => void;
 	beginStroke: () => void;
-	endStroke: (opacity: number) => Promise<RasterPatch | null>;
+	endStroke: (opacity: number) => Promise<RasterHistoryEntry | null>;
 	/** Discard in-progress stroke without compositing or undo entry. */
 	cancelStroke: () => void;
-	undo: () => boolean;
-	redo: () => boolean;
-	canUndo: () => boolean;
-	canRedo: () => boolean;
 	/** Upload an exact history patch into the committed document texture. */
 	applyRasterPatch: (bounds: Rect, pixels: Uint8Array) => void;
 	/** Read the entire committed document in tightly packed RGBA8 form. */
 	readDocument: () => Promise<Uint8Array | null>;
-	/** Dispose transient GPU undo patches after persistent history takes ownership. */
-	clearHotHistory: () => void;
 	addSample: (
 		x: number,
 		y: number,
