@@ -39,11 +39,11 @@ export const PresentUniforms = d.struct({
 	viewport: d.vec2f,
 	center: d.vec2f,
 	pan: d.vec2f,
-	zoom: d.f32,
-	rotate: d.f32,
+	/** cos(-rotation), sin(-rotation), calculated once on the CPU per frame. */
+	inverseRotation: d.vec2f,
+	invZoom: d.f32,
 	/** View-only mirror: 1 = normal, -1 = flip across vertical axis. */
 	flipX: d.f32,
 	strokeOpacity: d.f32,
-	strokeActive: d.f32,
 	docSize: d.vec2f
 });

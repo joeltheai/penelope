@@ -94,9 +94,8 @@ export async function createGpuPaint(
 	let strokeView = strokeTex.createView();
 	const brushView = brushTex.createView();
 	let docRenderView = docTex.createView('render');
-	let strokeRenderView = strokeTex.createView('render');
-	let strokeRenderViewB = strokeTexB.createView('render');
 	let strokeRawRenderView = root.unwrap(strokeTex).createView();
+	let strokeRawRenderViewB = root.unwrap(strokeTexB).createView();
 	let lassoStencilRawView = root.unwrap(lassoStencilTex).createView();
 
 	/** Filled via root.with(...) when (re)building pipelines after a doc resize. */
@@ -119,17 +118,27 @@ export async function createGpuPaint(
 		flow: AIRBRUSH_FLOW
 	});
 	const compositeUniforms = root.createUniform(CompositeUniforms, { opacity: 1 });
-	const presentUniforms = root.createUniform(PresentUniforms, {
+	type PresentUniformData = {
+		viewport: [number, number];
+		center: [number, number];
+		pan: [number, number];
+		inverseRotation: [number, number];
+		invZoom: number;
+		flipX: number;
+		strokeOpacity: number;
+		docSize: [number, number];
+	};
+	const presentUniformData: PresentUniformData = {
 		viewport: [1, 1],
 		center: [0.5, 0.5],
 		pan: [0, 0],
-		zoom: 1,
-		rotate: 0,
+		inverseRotation: [1, 0],
+		invZoom: 1,
 		flipX: 1,
 		strokeOpacity: 1,
-		strokeActive: 0,
 		docSize: [docW, docH]
-	});
+	};
+	const presentUniforms = root.createUniform(PresentUniforms, presentUniformData);
 
 	const stampLayout = tgpu.vertexLayout(d.disarrayOf(StampVertex));
 	const vertexBuf = root
@@ -178,8 +187,8 @@ export async function createGpuPaint(
 			? opts.pixels
 			: new Uint8Array(docW * docH * 4).fill(255);
 	docTex.write(initialPixels);
-	strokeTex.clear();
-	strokeTexB.clear();
+	// The first stroke render pass clears these lazily on the GPU.
+	let strokeNeedsClear = true;
 
 	let stampCount = 0;
 	let lastStamp: {
@@ -196,6 +205,11 @@ export async function createGpuPaint(
 	const fan: FanEngine = createFanEngine(docW, docH, 'fan');
 
 	const strokeBounds = createStrokeBoundsTracker();
+	let batchHasBounds = false;
+	let batchMinX = 0;
+	let batchMinY = 0;
+	let batchMaxX = 0;
+	let batchMaxY = 0;
 	let parsedColorHex = '';
 	let parsedColor: [number, number, number] = [0, 0, 0];
 	function colorChannels(hex: string) {
@@ -204,6 +218,72 @@ export async function createGpuPaint(
 			parsedColor = parseColor(hex);
 		}
 		return parsedColor;
+	}
+
+	function resetStampBatchBounds() {
+		batchHasBounds = false;
+	}
+
+	function expandStampBatchBounds(x: number, y: number, radius: number) {
+		const pad = Math.ceil(radius) + 1;
+		const minX = x - pad;
+		const minY = y - pad;
+		const maxX = x + pad;
+		const maxY = y + pad;
+		if (!batchHasBounds) {
+			batchMinX = minX;
+			batchMinY = minY;
+			batchMaxX = maxX;
+			batchMaxY = maxY;
+			batchHasBounds = true;
+			return;
+		}
+		batchMinX = Math.min(batchMinX, minX);
+		batchMinY = Math.min(batchMinY, minY);
+		batchMaxX = Math.max(batchMaxX, maxX);
+		batchMaxY = Math.max(batchMaxY, maxY);
+	}
+
+	function clampToDocument(bounds: Rect): Rect | null {
+		const x = Math.max(0, Math.floor(bounds.x));
+		const y = Math.max(0, Math.floor(bounds.y));
+		const x1 = Math.min(docW, Math.ceil(bounds.x + bounds.w));
+		const y1 = Math.min(docH, Math.ceil(bounds.y + bounds.h));
+		if (x1 <= x || y1 <= y) return null;
+		return { x, y, w: x1 - x, h: y1 - y };
+	}
+
+	function stampBatchScissor(): Rect | null {
+		if (!batchHasBounds) return null;
+		return clampToDocument({
+			x: batchMinX,
+			y: batchMinY,
+			w: batchMaxX - batchMinX,
+			h: batchMaxY - batchMinY
+		});
+	}
+
+	function encodeStrokeClear(encoder: GPUCommandEncoder) {
+		if (!strokeNeedsClear) return;
+		const pass = encoder.beginRenderPass({
+			colorAttachments: [
+				{
+					view: strokeRawRenderView,
+					clearValue: [0, 0, 0, 0],
+					loadOp: 'clear',
+					storeOp: 'store'
+				}
+			]
+		});
+		pass.end();
+		strokeNeedsClear = false;
+	}
+
+	function clearStrokeTextureNow() {
+		if (!strokeNeedsClear) return;
+		const encoder = root.device.createCommandEncoder();
+		encodeStrokeClear(encoder);
+		root.device.queue.submit([encoder.finish()]);
 	}
 
 	function queueStamp(
@@ -216,19 +296,25 @@ export async function createGpuPaint(
 		if (stampCount >= MAX_STAMPS_PER_FLUSH) return;
 		const radius = size * 0.5 * Math.max(sizePressure, 0.05);
 		strokeBounds.expand(x, y, radius);
+		expandStampBatchBounds(x, y, radius);
 		const offset = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
 		appendStamp(vertexCpu, offset, x, y, size, sizePressure, opacityPressure);
 		stampCount++;
 	}
 
-	function paintStampsToStroke(color: string) {
-		if (destroyed || stampCount === 0) return;
+	function paintStampsToStroke(color: string, externalEncoder?: GPUCommandEncoder) {
+		if (destroyed || stampCount === 0) return false;
 
 		if (currentBrush === 'airbrush') {
-			paintAirbrushStamps(color);
-			return;
+			return paintAirbrushStamps(color, externalEncoder);
 		}
 
+		const scissor = stampBatchScissor();
+		if (!scissor) {
+			stampCount = 0;
+			resetStampBatchBounds();
+			return false;
+		}
 		const floats = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
 		root.device.queue.writeBuffer(root.unwrap(vertexBuf), 0, vertexCpu.buffer, 0, floats * 4);
 
@@ -238,17 +324,30 @@ export async function createGpuPaint(
 			color: [r, g, b, 1]
 		});
 
-		strokeWashPipeline
-			.withColorAttachment({
-				view: strokeRenderView,
-				loadOp: 'load',
-				storeOp: 'store'
-			})
-			.draw(stampCount * VERTS_PER_STAMP);
+		const encoder = externalEncoder ?? root.device.createCommandEncoder();
+		const pass = encoder.beginRenderPass({
+			colorAttachments: [
+				{
+					view: strokeRawRenderView,
+					clearValue: [0, 0, 0, 0],
+					loadOp: strokeNeedsClear ? 'clear' : 'load',
+					storeOp: 'store'
+				}
+			]
+		});
+		pass.setScissorRect(scissor.x, scissor.y, scissor.w, scissor.h);
+		strokeWashPipeline.with(pass).draw(stampCount * VERTS_PER_STAMP);
+		pass.end();
+		strokeNeedsClear = false;
+		if (!externalEncoder) root.device.queue.submit([encoder.finish()]);
 		stampCount = 0;
+		resetStampBatchBounds();
+		return true;
 	}
 
 	function paintFanBatch(batch: FanBatch, color: string) {
+		const scissor = clampToDocument(batch.bounds);
+		if (!scissor) return;
 		root.device.queue.writeBuffer(
 			root.unwrap(fanVertexBuf),
 			0,
@@ -258,13 +357,22 @@ export async function createGpuPaint(
 		);
 		const [r, g, b] = colorChannels(color);
 		fanUniforms.write({ resolution: [docW, docH], color: [r, g, b] });
-		pipelines.fanPipeline
-			.withColorAttachment({
-				view: strokeRenderView,
-				loadOp: 'load',
-				storeOp: 'store'
-			})
-			.draw(batch.vertexCount);
+		const encoder = root.device.createCommandEncoder();
+		const pass = encoder.beginRenderPass({
+			colorAttachments: [
+				{
+					view: strokeRawRenderView,
+					clearValue: [0, 0, 0, 0],
+					loadOp: strokeNeedsClear ? 'clear' : 'load',
+					storeOp: 'store'
+				}
+			]
+		});
+		pass.setScissorRect(scissor.x, scissor.y, scissor.w, scissor.h);
+		pipelines.fanPipeline.with(pass).draw(batch.vertexCount);
+		pass.end();
+		root.device.queue.submit([encoder.finish()]);
+		strokeNeedsClear = false;
 		strokeBounds.expandRect(batch.bounds);
 	}
 
@@ -314,6 +422,7 @@ export async function createGpuPaint(
 		pipelines.lassoFillPipeline.with(fillPass).withStencilReference(0).draw(3);
 		fillPass.end();
 		root.device.queue.submit([encoder.finish()]);
+		strokeNeedsClear = false;
 
 		strokeBounds.reset();
 		strokeBounds.expandRect(batch.bounds);
@@ -323,8 +432,8 @@ export async function createGpuPaint(
 	 * Sequential Alpha Darken dabs encoded into one GPU submission. The copies
 	 * preserve ping-pong correctness, but avoid three queue submissions per dab.
 	 */
-	function paintAirbrushStamps(color: string) {
-		if (stampCount === 0) return;
+	function paintAirbrushStamps(color: string, externalEncoder?: GPUCommandEncoder) {
+		if (stampCount === 0) return false;
 		const [r, g, b] = colorChannels(color);
 		const floats = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
 		root.device.queue.writeBuffer(root.unwrap(vertexBuf), 0, vertexCpu.buffer, 0, floats * 4);
@@ -334,7 +443,8 @@ export async function createGpuPaint(
 			flow: AIRBRUSH_FLOW
 		});
 
-		const encoder = root.device.createCommandEncoder();
+		const encoder = externalEncoder ?? root.device.createCommandEncoder();
+		encodeStrokeClear(encoder);
 		const source = root.unwrap(strokeTex);
 		const target = root.unwrap(strokeTexB);
 
@@ -360,14 +470,20 @@ export async function createGpuPaint(
 				[w, h, 1]
 			);
 
+			const pass = encoder.beginRenderPass({
+				colorAttachments: [
+					{
+						view: strokeRawRenderViewB,
+						loadOp: 'load',
+						storeOp: 'store'
+					}
+				]
+			});
+			pass.setScissorRect(x0, y0, w, h);
 			pipelines.strokeAirbrushPipeline
-				.with(encoder)
-				.withColorAttachment({
-					view: strokeRenderViewB,
-					loadOp: 'load',
-					storeOp: 'store'
-				})
+				.with(pass)
 				.draw(VERTS_PER_STAMP, 1, i * VERTS_PER_STAMP);
+			pass.end();
 
 			encoder.copyTextureToTexture(
 				{ texture: target, origin: [x0, y0, 0] },
@@ -375,12 +491,15 @@ export async function createGpuPaint(
 				[w, h, 1]
 			);
 		}
-		root.device.queue.submit([encoder.finish()]);
+		if (!externalEncoder) root.device.queue.submit([encoder.finish()]);
 		stampCount = 0;
+		resetStampBatchBounds();
+		return true;
 	}
 
 	function uploadPathDirty(result: { pixels: Uint8Array; bounds: Rect }) {
 		const { bounds, pixels } = result;
+		clearStrokeTextureNow();
 		root.device.queue.writeTexture(
 			{
 				texture: root.unwrap(strokeTex),
@@ -597,9 +716,8 @@ export async function createGpuPaint(
 			docView = docTex.createView();
 			strokeView = strokeTex.createView();
 			docRenderView = docTex.createView('render');
-			strokeRenderView = strokeTex.createView('render');
-			strokeRenderViewB = strokeTexB.createView('render');
 			strokeRawRenderView = root.unwrap(strokeTex).createView();
+			strokeRawRenderViewB = root.unwrap(strokeTexB).createView();
 			lassoStencilRawView = root.unwrap(lassoStencilTex).createView();
 
 			const pixels = new Uint8Array(nextW * nextH * 4).fill(255);
@@ -620,8 +738,8 @@ export async function createGpuPaint(
 			}
 
 			docTex.write(pixels);
-			strokeTex.clear();
-			strokeTexB.clear();
+			strokeNeedsClear = true;
+			resetStampBatchBounds();
 			rebuildDocSamplePipelines();
 
 			void root.device.queue.onSubmittedWorkDone().then(() => {
@@ -637,8 +755,6 @@ export async function createGpuPaint(
 		setBrush(brush: BrushKind) {
 			if (destroyed) return;
 			currentBrush = brush;
-			// Pen / path tools use the hard tip texture; airbrush is procedural.
-			if (brush !== 'airbrush') brushTex.write(hardTipPixels);
 			if (isFanBrush(brush)) fan.setKind(brush);
 		},
 
@@ -651,10 +767,10 @@ export async function createGpuPaint(
 
 		beginStroke() {
 			if (destroyed) return;
-			strokeTex.clear();
-			strokeTexB.clear();
+			strokeNeedsClear = true;
 			lastStamp = null;
 			stampCount = 0;
+			resetStampBatchBounds();
 			if (currentBrush === 'lasso') {
 				lasso.setOptions(lassoOpts);
 				lasso.begin(lastColor);
@@ -720,10 +836,10 @@ export async function createGpuPaint(
 				compositeStroke(opacity);
 			}
 
-			strokeTex.clear();
-			strokeTexB.clear();
+			strokeNeedsClear = true;
 			lastStamp = null;
 			stampCount = 0;
+			resetStampBatchBounds();
 			lasso.reset();
 			fan.reset();
 			strokeBounds.reset();
@@ -736,8 +852,8 @@ export async function createGpuPaint(
 			lastStamp = null;
 			lasso.reset();
 			fan.reset();
-			strokeTex.clear();
-			strokeTexB.clear();
+			strokeNeedsClear = true;
+			resetStampBatchBounds();
 			strokeBounds.reset();
 		},
 
@@ -765,7 +881,8 @@ export async function createGpuPaint(
 			sizePressure: number,
 			opacityPressure: number,
 			color: string,
-			spacingFactor = 0.005
+			spacingFactor = 0.005,
+			viewZoom = 1
 		) {
 			if (destroyed) return;
 			lastColor = color;
@@ -786,7 +903,11 @@ export async function createGpuPaint(
 			}
 
 			if (sizeP <= 0 && opacP <= 0) return;
-			const spacing = spacingFor(brushDiameter * Math.max(sizeP, 0.05), spacingFactor);
+			const spacing = spacingFor(
+				brushDiameter * Math.max(sizeP, 0.05),
+				spacingFactor,
+				viewZoom
+			);
 
 			if (!lastStamp) {
 				queueStamp(x, y, brushDiameter, sizeP, opacP);
@@ -835,6 +956,7 @@ export async function createGpuPaint(
 		},
 
 		flushStamps(color: string) {
+			lastColor = color;
 			if (currentBrush === 'lasso') {
 				const dirty = lasso.flush();
 				if (dirty) paintLassoFill(dirty, color);
@@ -845,7 +967,7 @@ export async function createGpuPaint(
 				if (dirty) paintFanBatch(dirty, color);
 				return;
 			}
-			paintStampsToStroke(color);
+			// Pen and airbrush batches are encoded together with the next present.
 		},
 
 		async sampleColor(x: number, y: number) {
@@ -858,21 +980,30 @@ export async function createGpuPaint(
 		present(view: ViewState, cssW: number, cssH: number, opacity: number, strokeActive: boolean) {
 			if (destroyed || cssW < 1 || cssH < 1) return;
 
-			// One submit: fullscreen inverse-map present.
-			// TypeGPU's bare `.draw()` submits the queue each call — avoid dual passes.
-			presentUniforms.write({
-				viewport: [cssW, cssH],
-				center: [cssW * 0.5, cssH * 0.5],
-				pan: [view.x, view.y],
-				zoom: view.zoom,
-				rotate: view.rotation,
-				flipX: view.flipX < 0 ? -1 : 1,
-				strokeOpacity: opacity,
-				strokeActive: strokeActive ? 1 : 0,
-				docSize: [docW, docH]
-			});
+			const encoder = root.device.createCommandEncoder();
+			paintStampsToStroke(lastColor, encoder);
+			const inverseRotation = -view.rotation;
+			presentUniformData.viewport[0] = cssW;
+			presentUniformData.viewport[1] = cssH;
+			presentUniformData.center[0] = cssW * 0.5;
+			presentUniformData.center[1] = cssH * 0.5;
+			presentUniformData.pan[0] = view.x;
+			presentUniformData.pan[1] = view.y;
+			presentUniformData.inverseRotation[0] = Math.cos(inverseRotation);
+			presentUniformData.inverseRotation[1] = Math.sin(inverseRotation);
+			presentUniformData.invZoom = 1 / Math.max(view.zoom, 1e-6);
+			presentUniformData.flipX = view.flipX < 0 ? -1 : 1;
+			presentUniformData.strokeOpacity = opacity;
+			presentUniformData.docSize[0] = docW;
+			presentUniformData.docSize[1] = docH;
+			presentUniforms.write(presentUniformData);
 
-			pipelines.presentPipeline
+			const presentPipeline =
+				strokeActive && !strokeNeedsClear
+					? pipelines.presentStrokePipeline
+					: pipelines.presentIdlePipeline;
+			presentPipeline
+				.with(encoder)
 				.withColorAttachment({
 					view: context,
 					clearValue: [GRID_BG[0], GRID_BG[1], GRID_BG[2], 1],
@@ -880,6 +1011,7 @@ export async function createGpuPaint(
 					storeOp: 'store'
 				})
 				.draw(3);
+			root.device.queue.submit([encoder.finish()]);
 		},
 
 		destroy() {

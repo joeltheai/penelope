@@ -156,7 +156,8 @@ export function createPaintPipelines(deps: {
 	 */
 	let strokeAirbrushPipeline: ReturnType<typeof buildAirbrushPipeline>;
 	let compositePipeline: ReturnType<typeof buildCompositePipeline>;
-	let presentPipeline: ReturnType<typeof buildPresentPipeline>;
+	let presentIdlePipeline: ReturnType<typeof buildPresentPipeline>;
+	let presentStrokePipeline: ReturnType<typeof buildPresentPipeline>;
 
 	function buildAirbrushPipeline() {
 		/**
@@ -228,7 +229,7 @@ export function createPaintPipelines(deps: {
 		});
 	}
 
-	function buildPresentPipeline() {
+	function buildPresentPipeline(includeStroke: boolean) {
 		const presentFragment = tgpu.fragmentFn({
 			in: { uv: d.vec2f },
 			out: d.vec4f
@@ -239,24 +240,34 @@ export function createPaintPipelines(deps: {
 			// Match PaintCanvas.screenToDoc: pan → unflip → unrotate → unzoom
 			const x = (screen.x - u.center.x - u.pan.x) * u.flipX;
 			const y = screen.y - u.center.y - u.pan.y;
-			const c = std.cos(-u.rotate);
-			const s = std.sin(-u.rotate);
+			const c = u.inverseRotation.x;
+			const s = u.inverseRotation.y;
 			const ux = x * c - y * s;
 			const uy = x * s + y * c;
-			const docX = ux / u.zoom + u.docSize.x * 0.5;
-			const docY = uy / u.zoom + u.docSize.y * 0.5;
+			const docX = ux * u.invZoom + u.docSize.x * 0.5;
+			const docY = uy * u.invZoom + u.docSize.y * 0.5;
 			const docUv = d.vec2f(docX / u.docSize.x, docY / u.docSize.y);
 			const inDoc = docUv.x >= 0 && docUv.x <= 1 && docUv.y >= 0 && docUv.y <= 1;
 
-			// Always sample — Chrome rejects textureSample inside non-uniform `if (inDoc)`.
-			const safeUv = std.clamp(docUv, d.vec2f(0), d.vec2f(1));
-			const docSample = std.textureSample(docViewSlot.$, linearSamp.$, safeUv);
-			const strokeSample = std.textureSample(strokeViewSlot.$, linearSamp.$, safeUv);
-			const factor = u.strokeOpacity * u.strokeActive;
-			const a = strokeSample.a * factor;
-			const docRgb = strokeSample.rgb * factor + docSample.rgb * (1 - a);
+			if (inDoc) {
+				// Explicit LOD is valid in non-uniform control flow. The idle pipeline
+				// samples only the committed document; the live pipeline adds strokeTex.
+				const docSample = std.textureSampleLevel(docViewSlot.$, linearSamp.$, docUv, 0);
+				if (includeStroke) {
+					const strokeSample = std.textureSampleLevel(
+						strokeViewSlot.$,
+						linearSamp.$,
+						docUv,
+						0
+					);
+					const factor = u.strokeOpacity;
+					const a = strokeSample.a * factor;
+					return d.vec4f(strokeSample.rgb * factor + docSample.rgb * (1 - a), 1);
+				}
+				return d.vec4f(docSample.rgb, 1);
+			}
 
-			// Screen-fixed backdrop grid (outside the document only)
+			// Screen-fixed backdrop grid. This branch runs only outside the document.
 			const spacing = GRID_SPACING;
 			const majorSpacing = spacing * GRID_MAJOR_EVERY;
 			const fx = std.fract(screen.x / spacing);
@@ -280,8 +291,7 @@ export function createPaintPipelines(deps: {
 			const majorCol = d.vec3f(GRID_MAJOR[0], GRID_MAJOR[1], GRID_MAJOR[2]);
 			const withMinor = std.mix(bg, minorCol, minor);
 			const gridRgb = std.mix(withMinor, majorCol, major);
-			const rgb = std.select(gridRgb, docRgb, inDoc);
-			return d.vec4f(rgb, 1);
+			return d.vec4f(gridRgb, 1);
 		});
 
 		return root
@@ -298,7 +308,8 @@ export function createPaintPipelines(deps: {
 	function rebuildDocSamplePipelines() {
 		strokeAirbrushPipeline = buildAirbrushPipeline();
 		compositePipeline = buildCompositePipeline();
-		presentPipeline = buildPresentPipeline();
+		presentIdlePipeline = buildPresentPipeline(false);
+		presentStrokePipeline = buildPresentPipeline(true);
 	}
 
 	const strokeWashPipeline = root
@@ -376,8 +387,11 @@ export function createPaintPipelines(deps: {
 		get compositePipeline() {
 			return compositePipeline;
 		},
-		get presentPipeline() {
-			return presentPipeline;
+		get presentIdlePipeline() {
+			return presentIdlePipeline;
+		},
+		get presentStrokePipeline() {
+			return presentStrokePipeline;
 		},
 		rebuildDocSamplePipelines
 	};

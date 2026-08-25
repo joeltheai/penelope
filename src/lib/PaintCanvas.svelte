@@ -444,11 +444,13 @@
 		}
 
 		function syncZoom() {
-			zoom = view.zoom;
-			camX = view.x;
-			camY = view.y;
-			surfaceW = cssW;
-			surfaceH = cssH;
+			if (zoom !== view.zoom) zoom = view.zoom;
+			if (resizeMode) {
+				camX = view.x;
+				camY = view.y;
+				surfaceW = cssW;
+				surfaceH = cssH;
+			}
 		}
 
 		async function runHistoryOperation(operation: () => Promise<void>) {
@@ -799,7 +801,7 @@
 		function queuePaintAt(sx: number, sy: number, sizeP: number, opacP: number) {
 			if (!gpu) return;
 			const p = screenToDoc(sx, sy);
-			gpu.addSample(p.x, p.y, size * 2, sizeP, opacP, color, spacing);
+			gpu.addSample(p.x, p.y, size * 2, sizeP, opacP, color, spacing, view.zoom);
 			if (brush === 'airbrush') {
 				lastAirbrush = { x: p.x, y: p.y, sizeP, opacP };
 			}
@@ -814,8 +816,8 @@
 			const samples = e.getCoalescedEvents?.() ?? [];
 			const events = samples.length > 0 ? samples : [e];
 
-			// Queue all coalesced samples first, then one GPU flush + present.
-			// Flushing/presenting per sample was thrashing low-power mobile GPUs.
+			// Queue all coalesced samples. The next present encodes the stroke and
+			// screen passes together, then submits them once.
 			for (const ce of events) {
 				if (lastPaintScreen) {
 					const step = Math.hypot(ce.clientX - lastPaintScreen.x, ce.clientY - lastPaintScreen.y);

@@ -62,7 +62,8 @@ export type GpuPaint = {
 		sizePressure: number,
 		opacityPressure: number,
 		color: string,
-		spacingFactor?: number
+		spacingFactor?: number,
+		viewZoom?: number
 	) => void;
 	/** Queue one time-based airbrush dab even when the pointer has not moved. */
 	addTimedAirbrushDab: (
@@ -73,6 +74,7 @@ export type GpuPaint = {
 		opacityPressure: number,
 		color: string
 	) => void;
+	/** Flush path tools now; stamp brushes are encoded by the next present frame. */
 	flushStamps: (color: string) => void;
 	/** Sample document color at doc-space pixel; returns `#rrggbb` or null if out of bounds. */
 	sampleColor: (x: number, y: number) => Promise<string | null>;

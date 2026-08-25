@@ -106,8 +106,11 @@ export function appendStamp(
 	return o;
 }
 
-export function spacingFor(size: number, spacingFactor: number) {
-	return Math.max(0.25, size * spacingFactor);
+export function spacingFor(size: number, spacingFactor: number, viewZoom = 1) {
+	// More than two dabs per screen pixel cannot add visible detail. Keep the
+	// existing document-space floor at normal and high zoom levels.
+	const screenPixelFloor = 0.5 / Math.max(0.05, viewZoom);
+	return Math.max(0.25, screenPixelFloor, size * spacingFactor);
 }
 
 export function webGpuUnavailableMessage(): string {
