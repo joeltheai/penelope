@@ -585,7 +585,7 @@
 <svelte:window onkeydown={onKeyDown} />
 
 <div
-	class="fixed inset-0 z-[100] flex flex-col bg-[#111114] text-white"
+	class="fixed inset-0 z-100 flex flex-col bg-[#111114] text-white"
 	role="dialog"
 	aria-modal="true"
 	aria-label="History graph"
@@ -814,7 +814,7 @@
 		</div>
 
 		<div class="mt-2 flex w-full flex-wrap items-center gap-1.5">
-			<div class="mr-auto min-w-[180px]">
+			<div class="mr-auto min-w-45">
 				{#if selectedIsBranchTip}
 					<div class="flex max-w-sm gap-1.5">
 						<input
