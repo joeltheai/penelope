@@ -34,7 +34,6 @@ export function rgbToCss({ r, g, b }: RGB): string {
 	return `rgb(${Math.round(r)} ${Math.round(g)} ${Math.round(b)})`;
 }
 
-/** h in [0,360), s/v in [0,1] */
 export function rgbToHsv({ r, g, b }: RGB): HSV {
 	const rn = r / 255;
 	const gn = g / 255;
@@ -54,7 +53,6 @@ export function rgbToHsv({ r, g, b }: RGB): HSV {
 	return { h, s, v: max };
 }
 
-/** h in [0,360), s/v in [0,1] → RGB 0–255 */
 export function hsvToRgb({ h, s, v }: HSV): RGB {
 	const hh = ((h % 360) + 360) % 360;
 	const c = v * s;

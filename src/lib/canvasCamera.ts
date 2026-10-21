@@ -1,4 +1,3 @@
-/** Mutable pan/zoom/rotate state used by PaintCanvas and the present shader. */
 export type CameraView = {
 	x: number;
 	y: number;
@@ -33,7 +32,6 @@ export function screenToDoc(
 	};
 }
 
-/** Pan so `docPoint` stays under the given screen pixel. */
 export function placeDocAtScreen(
 	view: CameraView,
 	docPoint: { x: number; y: number },
@@ -54,7 +52,6 @@ export function placeDocAtScreen(
 	view.y = screenY - cssH / 2 - ry;
 }
 
-/** Keep the doc point under `pivot` fixed when zoom/rotation change. */
 export function setViewAroundPivot(
 	view: CameraView,
 	pivotX: number,
@@ -72,7 +69,6 @@ export function setViewAroundPivot(
 	placeDocAtScreen(view, before, pivotX, pivotY, cssW, cssH, docW, docH);
 }
 
-/** Zoom so the full document fits in the viewport (centered). */
 export function fitDocumentZoom(cssW: number, cssH: number, docW: number, docH: number) {
 	const margin = 0.92;
 	const nextZoom = Math.min(cssW / docW, cssH / docH) * margin;

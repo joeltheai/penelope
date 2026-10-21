@@ -133,8 +133,6 @@
 
 	function savedPositions() {
 		try {
-			// SAFETY: POSITION_KEY is only ever written by this dialog as { x, y } numbers;
-			// JSON.parse returns `any`, so assert the stored shape.
 			return JSON.parse(localStorage.getItem(POSITION_KEY) ?? '{}') as Record<
 				string,
 				{ x: number; y: number }
@@ -237,8 +235,6 @@
 			};
 			return;
 		}
-		// SAFETY: pointerdown targets on this surface are elements (buttons and the SVG
-		// viewport); Element.closest requires an Element, not a Text node.
 		const target = event.target as Element;
 		if (!target.closest('button')) {
 			panPointerId = event.pointerId;
@@ -274,7 +270,6 @@
 
 	function onCardPointerDown(event: PointerEvent, card: HistoryGraphCard) {
 		if (event.button !== 0) return;
-		// SAFETY: bound to a history card element in the template; currentTarget is that HTMLElement.
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		drag = {
 			cardId: card.id,
@@ -489,8 +484,6 @@
 	function scrubReplay(event: Event) {
 		if (!api) return;
 		api.pauseReplay();
-		// SAFETY: bound to the replay scrubber <input type="range"> in the template, so
-		// currentTarget is that input element and its value is a numeric index string.
 		replayIndex = Number((event.currentTarget as HTMLInputElement).value);
 		if (scrubRaf) cancelAnimationFrame(scrubRaf);
 		scrubRaf = requestAnimationFrame(() => {
@@ -538,7 +531,6 @@
 
 	function onPanelResizeStart(event: PointerEvent) {
 		if (event.button !== 0) return;
-		// SAFETY: bound to the panel resize handle element in the template; currentTarget is that HTMLElement.
 		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 		panelResize = {
 			pointerId: event.pointerId,

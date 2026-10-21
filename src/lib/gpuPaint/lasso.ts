@@ -16,7 +16,6 @@ type PullStamp = {
 	path: string;
 };
 
-/** Catmull-Rom line — cubic controls as samples arrive (≥4 raw pts). */
 class CatmullLine {
 	private path: Point[] = [];
 	private tension = 1;
@@ -97,7 +96,6 @@ function premulCopy(src: Uint8ClampedArray, w: number, h: number, dst: Uint8Arra
 	}
 }
 
-/** Cap splat kick so dirty AABBs stay small. */
 const SPLAT_MAX_DISPLACE = 28;
 export const MAX_LASSO_EDGES = 32_768;
 const FLOATS_PER_VERTEX = 3;
@@ -119,7 +117,6 @@ export type LassoFillBatch = {
 
 export type LassoResult = LassoSampleResult | LassoFillBatch;
 
-/** GPU geometry for closed fill; pull-shapes retain incremental Canvas rasterization. */
 export function createLassoEngine(docW: number, docH: number) {
 	let opts: LassoOptions = { ...DEFAULT_LASSO_OPTIONS };
 	let color = '#000000';
@@ -317,8 +314,6 @@ export function createLassoEngine(docW: number, docH: number) {
 				emit(c2.x, c2.y);
 				emit(p3.x, p3.y);
 			} else {
-				// Four line segments closely approximate the Canvas cubic while keeping
-				// geometry much smaller than a document-sized pixel upload.
 				emitCubic(p2, c1, c2, p3, 0.25);
 				emitCubic(p2, c1, c2, p3, 0.5);
 				emitCubic(p2, c1, c2, p3, 0.75);

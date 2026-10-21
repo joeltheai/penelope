@@ -37,8 +37,6 @@ function putPixels(
 	x = 0,
 	y = 0
 ) {
-	// SAFETY: callers pass freshly copied Uint8Arrays (baseline / frame payloads) that fully
-	// own an ArrayBuffer; ImageData requires an ArrayBuffer-backed clamped view.
 	const clamped = new Uint8ClampedArray(pixels.buffer as ArrayBuffer, pixels.byteOffset, pixels.byteLength);
 	context.putImageData(new ImageData(clamped, width, height), x, y);
 }

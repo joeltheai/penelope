@@ -64,8 +64,6 @@ function putPixels(
 	x = 0,
 	y = 0
 ) {
-	// SAFETY: callers pass freshly copied Uint8Arrays (baseline / region payloads) that fully
-	// own an ArrayBuffer; ImageData requires an ArrayBuffer-backed clamped view.
 	const clamped = new Uint8ClampedArray(pixels.buffer as ArrayBuffer, pixels.byteOffset, pixels.byteLength);
 	context.putImageData(new ImageData(clamped, width, height), x, y);
 }
@@ -172,7 +170,6 @@ export async function renderHistorySnapshots(
 
 	for (const targetId of missingNodeIds) {
 		throwIfAborted(options.signal);
-		// SAFETY: chain collects ancestor HistoryNodes up to the first cached snapshot.
 		const chain = [] as typeof graph.nodes;
 		let cursor: string | null = targetId;
 		while (cursor && !cache.blobs.has(cursor)) {
@@ -198,8 +195,6 @@ export async function renderHistorySnapshots(
 		cache.blobs.set(targetId, await canvasToBlob(surface.canvas));
 	}
 
-	// Keep recent checkpoints for fast incremental opens without retaining an
-	// unbounded thumbnail archive during multi-hour sessions.
 	if (cache.blobs.size > MAX_CACHED_SNAPSHOTS) {
 		for (const key of cache.blobs.keys()) {
 			if (cache.blobs.size <= MAX_CACHED_SNAPSHOTS) break;
@@ -269,8 +264,6 @@ export class HistoryReplaySession {
 			0
 		);
 		while (this.patchCacheBytes > MAX_REPLAY_CACHE_BYTES && this.patchCache.size > 1) {
-			// SAFETY: eviction only runs while patchCache.size > 1, so the first key exists and is a
-			// nodeId string (Map preserves insertion order; only nodeId keys are ever set).
 			const oldestId = this.patchCache.keys().next().value as string;
 			const oldest = this.patchCache.get(oldestId)!;
 			this.patchCache.delete(oldestId);

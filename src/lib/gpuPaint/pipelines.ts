@@ -9,7 +9,6 @@ import {
 
 type AnyRoot = Awaited<ReturnType<typeof tgpu.init>>;
 
-/** Build stamp / composite / present pipelines (rebuild when doc textures change). */
 export function createPaintPipelines(deps: {
 	root: AnyRoot;
 	format: GPUTextureFormat;
@@ -27,7 +26,6 @@ export function createPaintPipelines(deps: {
 	linearSamp: any;
 	docViewSlot: any;
 	strokeViewSlot: any;
-	/** Mutable views rebound after document resize. */
 	views: { docView: any; strokeView: any };
 }) {
 	const {
@@ -82,9 +80,6 @@ export function createPaintPipelines(deps: {
 		return d.vec4f(d.vec3f(fanUniforms.$.color), 1);
 	});
 
-	// Pipelines that sample textures capture views at shell creation time —
-	// call rebuildDocSamplePipelines() after views.docView/strokeView change.
-
 	const strokeVertex = tgpu.vertexFn({
 		in: {
 			pos: d.vec2f,
@@ -121,7 +116,6 @@ export function createPaintPipelines(deps: {
 		return d.vec4f(color.rgb * a, a);
 	});
 
-	/** Airbrush dab vertex — also passes doc UVs to sample the stroke buffer. */
 	const airbrushVertex = tgpu.vertexFn({
 		in: {
 			pos: d.vec2f,
@@ -150,20 +144,12 @@ export function createPaintPipelines(deps: {
 		};
 	});
 
-	/**
-	 * Pipelines that sample doc/stroke textures must be rebuilt when those
-	 * textures are replaced (TypeGPU captures the view object at shell creation).
-	 */
 	let strokeAirbrushPipeline: ReturnType<typeof buildAirbrushPipeline>;
 	let compositePipeline: ReturnType<typeof buildCompositePipeline>;
 	let presentIdlePipeline: ReturnType<typeof buildPresentPipeline>;
 	let presentStrokePipeline: ReturnType<typeof buildPresentPipeline>;
 
 	function buildAirbrushPipeline() {
-		/**
-		 * Non-incremental airbrush wash: every dab approaches (but never
-		 * exceeds) the current pressure opacity cap by flow × soft mask.
-		 */
 		const airbrushFragment = tgpu.fragmentFn({
 			in: { tipUv: d.vec2f, docUv: d.vec2f, opacityPressure: d.f32 },
 			out: d.vec4f
@@ -173,7 +159,6 @@ export function createPaintPipelines(deps: {
 			const dst = std.textureSample(strokeViewSlot.$, linearSamp.$, input.docUv);
 			const dstA = dst.a;
 
-			// Soft gaussian-ish tip: dense center, long feathered falloff.
 			const delta = input.tipUv - d.vec2f(0.5);
 			const r = std.length(delta) * 2;
 			const inside = std.select(0, 1, r < 1);
@@ -237,7 +222,6 @@ export function createPaintPipelines(deps: {
 			'use gpu';
 			const u = presentUniforms.$;
 			const screen = input.uv * u.viewport;
-			// Match PaintCanvas.screenToDoc: pan → unflip → unrotate → unzoom
 			const x = (screen.x - u.center.x - u.pan.x) * u.flipX;
 			const y = screen.y - u.center.y - u.pan.y;
 			const c = u.inverseRotation.x;
@@ -250,8 +234,6 @@ export function createPaintPipelines(deps: {
 			const inDoc = docUv.x >= 0 && docUv.x <= 1 && docUv.y >= 0 && docUv.y <= 1;
 
 			if (inDoc) {
-				// Explicit LOD is valid in non-uniform control flow. The idle pipeline
-				// samples only the committed document; the live pipeline adds strokeTex.
 				const docSample = std.textureSampleLevel(docViewSlot.$, linearSamp.$, docUv, 0);
 				if (includeStroke) {
 					const strokeSample = std.textureSampleLevel(
@@ -267,7 +249,6 @@ export function createPaintPipelines(deps: {
 				return d.vec4f(docSample.rgb, 1);
 			}
 
-			// Screen-fixed backdrop grid. This branch runs only outside the document.
 			const spacing = GRID_SPACING;
 			const majorSpacing = spacing * GRID_MAJOR_EVERY;
 			const fx = std.fract(screen.x / spacing);
@@ -319,7 +300,6 @@ export function createPaintPipelines(deps: {
 			fragment: strokeFragment,
 			targets: {
 				format: 'rgba8unorm',
-				// Krita "wash": dabs take max coverage instead of stacking.
 				blend: {
 					color: { srcFactor: 'one', dstFactor: 'one', operation: 'max' },
 					alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'max' }
@@ -336,7 +316,6 @@ export function createPaintPipelines(deps: {
 			fragment: fanFragment,
 			targets: {
 				format: 'rgba8unorm',
-				// A repeated sweep keeps the same falloff instead of accumulating opacity.
 				blend: {
 					color: { srcFactor: 'one', dstFactor: 'one', operation: 'max' },
 					alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'max' }

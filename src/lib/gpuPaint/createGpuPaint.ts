@@ -77,7 +77,6 @@ export async function createGpuPaint(
 
 	let docTex = createDocTexture(docW, docH);
 	let strokeTex = createDocTexture(docW, docH);
-	/** Ping-pong target for Krita Alpha Darken airbrush dabs (sample strokeTex, write here). */
 	let strokeTexB = createDocTexture(docW, docH);
 	function createLassoStencilTexture(w: number, h: number) {
 		return root.createTexture({ size: [w, h], format: 'stencil8' }).$usage('render');
@@ -98,7 +97,6 @@ export async function createGpuPaint(
 	let strokeRawRenderViewB = root.unwrap(strokeTexB).createView();
 	let lassoStencilRawView = root.unwrap(lassoStencilTex).createView();
 
-	/** Filled via root.with(...) when (re)building pipelines after a doc resize. */
 	const docViewSlot = tgpu.slot<typeof docView>();
 	const strokeViewSlot = tgpu.slot<typeof strokeView>();
 
@@ -181,13 +179,11 @@ export async function createGpuPaint(
 	};
 	rebuildDocSamplePipelines();
 
-	// White document background (Texture.clear is zero-fill only).
 	const initialPixels =
 		opts?.pixels?.byteLength === docW * docH * 4
 			? opts.pixels
 			: new Uint8Array(docW * docH * 4).fill(255);
 	docTex.write(initialPixels);
-	// The first stroke render pass clears these lazily on the GPU.
 	let strokeNeedsClear = true;
 
 	let stampCount = 0;
@@ -428,10 +424,6 @@ export async function createGpuPaint(
 		strokeBounds.expandRect(batch.bounds);
 	}
 
-	/**
-	 * Sequential Alpha Darken dabs encoded into one GPU submission. The copies
-	 * preserve ping-pong correctness, but avoid three queue submissions per dab.
-	 */
 	function paintAirbrushStamps(color: string, externalEncoder?: GPUCommandEncoder) {
 		if (stampCount === 0) return false;
 		const [r, g, b] = colorChannels(color);
@@ -565,7 +557,6 @@ export async function createGpuPaint(
 		}
 	}
 
-	/** Read several dirty regions with one GPU submission and one mapped buffer. */
 	async function readTextureRegions(texture: typeof docTex, regions: Rect[]) {
 		if (destroyed || regions.length === 0) return null;
 		const layouts = regions.map((bounds) => {
@@ -639,7 +630,6 @@ export async function createGpuPaint(
 		const patch = await readDocPixels(x0, y0, srcW, srcH);
 		if (!patch) return null;
 
-		// Full loupe buffer; outside-doc samples stay white like paper.
 		const pixels = new Uint8ClampedArray(full * full * 4);
 		pixels.fill(255);
 		const destOx = x0 - (cx - r);
@@ -678,8 +668,6 @@ export async function createGpuPaint(
 			if (destroyed) return false;
 			const nextW = sanitizeDocSize(width);
 			const nextH = sanitizeDocSize(height);
-			// Krita resizeImage(newRect): newRect in old image coords.
-			// Content is translated by (-cropX, -cropY) — never resampled.
 			const cropX = Math.round(opts?.cropX ?? 0);
 			const cropY = Math.round(opts?.cropY ?? 0);
 			if (nextW === docW && nextH === docH && cropX === 0 && cropY === 0) {
@@ -696,9 +684,6 @@ export async function createGpuPaint(
 			const oldW = docW;
 			const oldH = docH;
 
-			// Read the whole document to CPU (eyedropper readback path).
-			// Krita keeps pixels by shifting layer data; we do the
-			// equivalent translate on the CPU then re-upload.
 			const oldPixels = await readDocPixels(0, 0, oldW, oldH);
 			if (!oldPixels || destroyed) return false;
 
@@ -817,8 +802,6 @@ export async function createGpuPaint(
 			const regions = strokeBounds.finalizeRegions(docW, docH);
 			let serializedPatch: Promise<RasterHistoryEntry | null> | null = null;
 			if (regions.length > 0) {
-				// Queue order preserves the before/composite/after boundary. Each side uses
-				// one staging buffer even when a long sparse stroke spans many tile-runs.
 				const beforePromise = readTextureRegions(docTex, regions);
 				compositeStroke(opacity);
 				const afterPromise = readTextureRegions(docTex, regions);
@@ -967,7 +950,6 @@ export async function createGpuPaint(
 				if (dirty) paintFanBatch(dirty, color);
 				return;
 			}
-			// Pen and airbrush batches are encoded together with the next present.
 		},
 
 		async sampleColor(x: number, y: number) {

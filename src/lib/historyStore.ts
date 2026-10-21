@@ -41,7 +41,6 @@ export type HistoryNode = {
 	branchId: string;
 	createdAt: number;
 	bounds: Rect;
-	/** Exact raw before+after pixel payload, excluding small IndexedDB record overhead. */
 	byteLength?: number;
 };
 
@@ -171,9 +170,6 @@ async function openDatabase(): Promise<IDBDatabase> {
 					const projectStore = request.transaction.objectStore('project');
 					const legacyRequest = projectStore.get(PROJECT_ID);
 					legacyRequest.onsuccess = () => {
-						// SAFETY: the project store is written by this app with the v1 schema above; legacy
-						// records may also carry a stray `baseline` blob that this upgrade migrates into the
-						// dedicated baseline store. IDBRequest.result is `any`, so narrow it to that shape.
 						const legacy = legacyRequest.result as
 							| (StoredProject & { baseline?: ArrayBuffer })
 							| undefined;
@@ -196,8 +192,6 @@ async function openDatabase(): Promise<IDBDatabase> {
 }
 
 function ownedBuffer(bytes: Uint8Array): ArrayBuffer {
-	// SAFETY: the ownership check guarantees `bytes` wraps its whole buffer (the else-branch
-	// already yields a fresh ArrayBuffer via slice().buffer), so the buffer is an ArrayBuffer.
 	return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
 		? (bytes.buffer as ArrayBuffer)
 		: bytes.slice().buffer;
@@ -239,9 +233,6 @@ export class PersistentHistory {
 	static async open(width: number, height: number): Promise<PersistentHistory> {
 		const db = await openDatabase();
 		const tx = db.transaction(['project', 'baseline', 'nodes', 'branches'], 'readonly');
-		// SAFETY: store schemas are fixed in openDatabase(): 'project'/'baseline' hold one record
-		// under PROJECT_ID and 'nodes'/'branches' hold HistoryNode[] / HistoryBranch[].
-		// IDBRequest.result is `any`, so assert the known record shapes.
 		const [storedProject, storedBaseline, storedNodes, storedBranches] = await Promise.all([
 			requestResult(tx.objectStore('project').get(PROJECT_ID) as IDBRequest<StoredProject | undefined>),
 			requestResult(
@@ -322,7 +313,6 @@ export class PersistentHistory {
 		return path;
 	}
 
-	/** Stable across appends, replaced when the document baseline is reset. */
 	getSnapshotCacheToken() {
 		return this.snapshotCacheToken;
 	}
@@ -405,8 +395,6 @@ export class PersistentHistory {
 
 	private async getStoredPatch(nodeId: string): Promise<StoredPatch | LegacyStoredPatch> {
 		const tx = this.db.transaction('patches', 'readonly');
-		// SAFETY: the 'patches' store holds StoredPatch (v2) or LegacyStoredPatch (v1) records
-		// keyed by nodeId; IDBRequest.result is `any`, so assert the known record shape.
 		const patch = await requestResult(
 			tx.objectStore('patches').get(nodeId) as IDBRequest<
 				StoredPatch | LegacyStoredPatch | undefined
@@ -421,7 +409,6 @@ export class PersistentHistory {
 		if (nodeIds.length === 0) return [];
 		const tx = this.db.transaction('patches', 'readonly');
 		const store = tx.objectStore('patches');
-		// SAFETY: same 'patches' store schema as getStoredPatch; IDBRequest.result is `any`.
 		const patches = await Promise.all(
 			nodeIds.map((nodeId) =>
 				requestResult(
@@ -551,7 +538,6 @@ export class PersistentHistory {
 				try {
 					await apply(step.bounds, step.rollback);
 				} catch {
-					// Keep the original transition error.
 				}
 			}
 			throw error;

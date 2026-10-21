@@ -36,9 +36,6 @@
 		updateHasPressure
 	} from '$lib/penPressure';
 
-	// SAFETY: these bindable defaults are valid members of their prop types — 'pen' is a
-	// BrushKind, the lasso object matches LassoOptions, and null / EMPTY_HISTORY_STATE are
-	// the unset sentinels until the parent supplies real values.
 	let {
 		color = $bindable('#1a6cff'),
 		size = $bindable(8),
@@ -81,7 +78,6 @@
 		eyedropper?: boolean;
 		resizeMode?: boolean;
 		suspended?: boolean;
-		/** Temporary view flip across vertical axis (does not alter pixels). */
 		mirrorView?: boolean;
 	} = $props();
 
@@ -95,17 +91,14 @@
 	let undoFn: (() => void) | null = null;
 	let redoFn: (() => void) | null = null;
 
-	/** Live refs for eyedropper loupe (wired from the GPU effect). */
 	let gpuRef: GpuPaint | null = null;
 	let screenToDocRef: ((sx: number, sy: number) => { x: number; y: number }) | null = null;
 
-	/** Camera mirrors for resize overlay (rotation is forced to 0 in resize mode). */
 	let camX = $state(0);
 	let camY = $state(0);
 	let surfaceW = $state(0);
 	let surfaceH = $state(0);
 
-	/** New canvas frame in current document space. */
 	let cropX = $state(0);
 	let cropY = $state(0);
 	let cropW = $state(2000);
@@ -229,7 +222,6 @@
 		let lastRotateAngle: number | null = null;
 		const penState = createPenPressureState();
 		let lastPaintScreen: { x: number; y: number } | null = null;
-		/** Last dab site for Krita-style timed airbrush while stationary. */
 		let lastAirbrush: {
 			x: number;
 			y: number;
@@ -249,10 +241,8 @@
 			startRotation: number;
 		} | null = null;
 
-		/** Multi-finger tap: 2 → undo, 3 → redo (must stay still; distinct from pinch). */
 		const TAP_SLOP_PX = 14;
 		const TAP_MAX_MS = 400;
-		/** First finger alone briefly before others — treat as chord, not a paint stroke. */
 		const CHORD_MS = 200;
 		const CHORD_MOVE_PX = 24;
 		let multiTap: {
@@ -260,7 +250,6 @@
 			maxFingers: number;
 			origins: Record<number, { x: number; y: number }>;
 			moved: boolean;
-			/** False if this gesture interrupted a committed paint stroke. */
 			eligible: boolean;
 		} | null = null;
 
@@ -393,7 +382,6 @@
 		function startAirbrushTimer() {
 			stopAirbrushTimer();
 			if (brush !== 'airbrush') return;
-			// Krita airbrush rate ≈ dabs/sec while held still.
 			airbrushTimer = setInterval(() => {
 				if (!drawing || !strokeActive || !gpu || !lastAirbrush) return;
 				gpu.addTimedAirbrushDab(
@@ -698,7 +686,6 @@
 		presentImpl = () => {
 			const next = mirrorView;
 			if (next !== mirrorApplied) {
-				// Keep the viewport center fixed when toggling.
 				view.x = -view.x;
 				mirrorApplied = next;
 				syncZoom();
@@ -753,7 +740,6 @@
 			present();
 		}
 
-		/** End or discard the current stroke when a 2nd/3rd finger lands. */
 		function resolveStrokeForMultiTouch(): boolean {
 			if (!drawing && !strokeActive) return false;
 			const nascent =
@@ -766,7 +752,6 @@
 			return !nascent;
 		}
 
-		/** Zoom so the full document fits in the viewport (centered). */
 		function fitDocumentToScreen() {
 			if (!gpu || cssW < 1 || cssH < 1) return;
 			view.zoom = fitDocumentZoom(cssW, cssH, gpu.docW, gpu.docH);
@@ -816,8 +801,6 @@
 			const samples = e.getCoalescedEvents?.() ?? [];
 			const events = samples.length > 0 ? samples : [e];
 
-			// Queue all coalesced samples. The next present encodes the stroke and
-			// screen passes together, then submits them once.
 			for (const ce of events) {
 				if (lastPaintScreen) {
 					const step = Math.hypot(ce.clientX - lastPaintScreen.x, ce.clientY - lastPaintScreen.y);
@@ -860,7 +843,6 @@
 							startRotation: view.rotation
 						};
 					} else {
-						// 3+ fingers: tap candidate for redo, not a pinch.
 						pinch = null;
 					}
 				}
@@ -915,7 +897,6 @@
 						MAX_Z,
 						Math.max(MIN_Z, pinch.startZoom * (dist / Math.max(pinch.startDist, 1e-6)))
 					);
-					// Negate twist while mirrored so screen-space rotation feels natural.
 					view.rotation =
 						pinch.startRotation + (angle - pinch.startAngle) * viewFlipX();
 					placeDocAtScreen(pinch.docPoint, midX, midY);
@@ -936,7 +917,6 @@
 						if (dAng > Math.PI) dAng -= Math.PI * 2;
 						if (dAng < -Math.PI) dAng += Math.PI * 2;
 						lastRotateAngle = ang;
-						// Negate while mirrored so screen-space rotation feels natural.
 						setViewAroundPivot(
 							rotatePivot.x,
 							rotatePivot.y,
@@ -957,7 +937,6 @@
 				return;
 			}
 
-			// Pen lift often sends a trailing move with buttons=0 / pressure=0
 			if (drawing && e.buttons !== 0) {
 				paintPointerSamples(e);
 			}
@@ -983,7 +962,6 @@
 
 		function onWheel(e: WheelEvent) {
 			e.preventDefault();
-			// Continuous zoom from trackpad/mouse delta (not stepped 1.1/0.9).
 			let dy = e.deltaY;
 			if (e.deltaMode === 1) dy *= 16;
 			else if (e.deltaMode === 2) dy *= cssH || 800;

@@ -2,7 +2,6 @@ import type { Rect } from './types';
 
 const TILE_SIZE = 64;
 
-/** Tracks the integer pixel AABB of the current stroke (expanded by brush radius). */
 export function createStrokeBoundsTracker() {
 	let strokeMinX = 0;
 	let strokeMinY = 0;
@@ -42,7 +41,7 @@ export function createStrokeBoundsTracker() {
 	}
 
 	function expand(x: number, y: number, radius: number) {
-		const pad = Math.ceil(radius) + 1; // +1 for AA fringe
+		const pad = Math.ceil(radius) + 1;
 		const minX = x - pad;
 		const minY = y - pad;
 		const maxX = x + pad;
@@ -51,7 +50,6 @@ export function createStrokeBoundsTracker() {
 		markTiles(minX, minY, maxX, maxY);
 	}
 
-	/** Mark a rasterized region whose interior may all have changed. */
 	function expandRect(rect: Rect) {
 		const minX = rect.x;
 		const minY = rect.y;
@@ -114,7 +112,6 @@ export function createStrokeBoundsTracker() {
 			emit();
 		}
 
-		// A compact local stroke is cheaper as its exact AABB than as tile-aligned rows.
 		const tiledPixels = regions.reduce((sum, region) => sum + region.w * region.h, 0);
 		return regions.length === 0 || bounds.w * bounds.h <= tiledPixels ? [bounds] : regions;
 	}

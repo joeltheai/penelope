@@ -67,12 +67,9 @@
 	let panelEl: HTMLElement | undefined = $state();
 
 	$effect(() => {
-		if (!('window' in globalThis)) return;
 		try {
 			const raw = localStorage.getItem(PANEL_KEY);
 			if (raw) {
-				// SAFETY: PANEL_KEY is only ever written by savePanel() as { x, y } numbers;
-				// JSON.parse returns `any`, so assert the stored shape.
 				const saved = JSON.parse(raw) as { x: number; y: number };
 				panelX = saved.x;
 				panelY = saved.y;
@@ -100,13 +97,11 @@
 		try {
 			localStorage.setItem(PANEL_KEY, JSON.stringify({ x: panelX, y: panelY }));
 		} catch {
-			/* ignore */
 		}
 	}
 
 	function onPanelDragStart(e: PointerEvent) {
 		if (e.button !== 0) return;
-		// SAFETY: bound to the panel drag handle element in the template; currentTarget is that HTMLElement.
 		const handle = e.currentTarget as HTMLElement;
 		const startX = e.clientX;
 		const startY = e.clientY;
@@ -145,8 +140,6 @@
 	}
 
 	function onBrushChange(event: Event) {
-		// SAFETY: bound to the brush <select> in the template, whose options are exactly the
-		// BRUSHES ids; currentTarget is that select element, so its value is a BrushKind.
 		const id = (event.currentTarget as HTMLSelectElement).value as BrushKind;
 		const next = BRUSHES.find((item) => item.id === id);
 		if (next) selectBrush(next);
@@ -214,7 +207,6 @@
 {#if !resizeMode}
 	<ColorPicker bind:color bind:picking={eyedropper} />
 
-	<!-- Size + opacity rollers (draggable) -->
 	{#if panelReady}
 		<div
 			bind:this={panelEl}
@@ -251,7 +243,6 @@
 	{/if}
 {/if}
 
-<!-- Tool controls -->
 <div class="fixed top-4 left-4 z-50 flex max-w-[calc(100vw-2rem)] flex-col gap-1.5">
 	{#if !resizeMode}
 		<label class="flex items-center gap-1.5 rounded-md bg-[#1e1e22] p-1 text-[11px] text-white/60">

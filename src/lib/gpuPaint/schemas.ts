@@ -23,7 +23,6 @@ export const FanUniforms = d.struct({
 	color: d.vec3f
 });
 
-/** Krita-style Alpha Darken params for airbrush wash dabs. */
 export const AirbrushUniforms = d.struct({
 	resolution: d.vec2f,
 	color: d.vec3f,
@@ -34,15 +33,12 @@ export const CompositeUniforms = d.struct({
 	opacity: d.f32
 });
 
-/** Camera + present (inverse screen→doc map). */
 export const PresentUniforms = d.struct({
 	viewport: d.vec2f,
 	center: d.vec2f,
 	pan: d.vec2f,
-	/** cos(-rotation), sin(-rotation), calculated once on the CPU per frame. */
 	inverseRotation: d.vec2f,
 	invZoom: d.f32,
-	/** View-only mirror: 1 = normal, -1 = flip across vertical axis. */
 	flipX: d.f32,
 	strokeOpacity: d.f32,
 	docSize: d.vec2f

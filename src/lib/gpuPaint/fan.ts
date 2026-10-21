@@ -41,12 +41,6 @@ function clampRect(r: Rect, docW: number, docH: number): Rect | null {
 	return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
-/**
- * Builds only the newly swept fan triangles. Fan Fade stores opacity on each
- * vertex (one at the fixed origin, zero at the moving edge), so the GPU
- * interpolates the falloff while rasterizing. Earlier triangles never need to
- * be cleared or rebuilt when the pointer moves farther from the origin.
- */
 export function createFanEngine(docW: number, docH: number, kind: FanKind) {
 	const pending = new Float32Array(
 		MAX_PENDING_TRIANGLES * VERTICES_PER_TRIANGLE * FLOATS_PER_VERTEX

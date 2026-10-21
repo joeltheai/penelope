@@ -22,7 +22,6 @@ export function parseColor(hex: string): [number, number, number] {
 	return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
-/** Hard round tip with ~1px AA — reads like a pen, not an airbrush. */
 export function makeHardBrushPixels(size: number): Uint8Array {
 	const pixels = new Uint8Array(size * size * 4);
 	const aa = 1.25 / size;
@@ -30,7 +29,7 @@ export function makeHardBrushPixels(size: number): Uint8Array {
 		for (let x = 0; x < size; x++) {
 			const dx = (x + 0.5) / size - 0.5;
 			const dy = (y + 0.5) / size - 0.5;
-			const r = Math.hypot(dx, dy) * 2; // 0 center → 1 at edge
+			const r = Math.hypot(dx, dy) * 2;
 			const a = r >= 1 ? 0 : r > 1 - aa ? (1 - r) / aa : 1;
 			const i = (y * size + x) * 4;
 			pixels[i] = 255;
@@ -42,7 +41,6 @@ export function makeHardBrushPixels(size: number): Uint8Array {
 	return pixels;
 }
 
-/** Even-odd fill of a closed polygon into a tight AABB (premultiplied RGBA). */
 export function rasterizePolygonEvenOdd(
 	points: { x: number; y: number }[],
 	bounds: Rect,
@@ -107,8 +105,6 @@ export function appendStamp(
 }
 
 export function spacingFor(size: number, spacingFactor: number, viewZoom = 1) {
-	// More than two dabs per screen pixel cannot add visible detail. Keep the
-	// existing document-space floor at normal and high zoom levels.
 	const screenPixelFloor = 0.5 / Math.max(0.05, viewZoom);
 	return Math.max(0.25, screenPixelFloor, size * spacingFactor);
 }

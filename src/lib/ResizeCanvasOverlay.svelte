@@ -61,7 +61,6 @@
 	function onResizePointerDown(e: PointerEvent) {
 		if (e.button !== 0 && e.pointerType === 'mouse') return;
 		e.preventDefault();
-		// SAFETY: bound to the resize surface element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		el.setPointerCapture(e.pointerId);
 
@@ -91,7 +90,6 @@
 	}
 
 	function onResizePointerMove(e: PointerEvent) {
-		// SAFETY: bound to the resize surface element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (resizePanCam && el.hasPointerCapture(e.pointerId)) {
 			onPan(e.clientX - resizePanCam.lastX, e.clientY - resizePanCam.lastY);
@@ -119,7 +117,6 @@
 	}
 
 	function onResizePointerUp(e: PointerEvent) {
-		// SAFETY: bound to the resize surface element in the template; currentTarget is that HTMLElement.
 		const el = e.currentTarget as HTMLElement;
 		if (el.hasPointerCapture(e.pointerId)) {
 			el.releasePointerCapture(e.pointerId);
@@ -148,7 +145,6 @@
 	onpointercancel={onResizePointerUp}
 	onwheel={onResizeWheel}
 >
-	<!-- Dim outside the crop frame -->
 	<div
 		class="pointer-events-none absolute bg-black/45"
 		style:left="0"
@@ -178,7 +174,6 @@
 		style:height="{cropScreen.height}px"
 	></div>
 
-	<!-- Crop frame -->
 	<div
 		class="pointer-events-none absolute border border-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
 		style:left="{cropScreen.left}px"

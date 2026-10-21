@@ -5,10 +5,6 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 import typegpu from 'unplugin-typegpu/vite';
 import { defineConfig } from 'vite';
 
-/**
- * Keep Cloudflare for `vite build` / CI deploy, but skip `emulate()` so
- * `vite dev` does not start Wrangler/workerd (and its local SQLite state).
- */
 function adapter() {
 	const { emulate: _emulate, ...rest } = cloudflare();
 	return rest;
@@ -21,7 +17,6 @@ export default defineConfig({
 		tailwindcss(),
 		sveltekit({
 			compilerOptions: {
-				// Force runes mode for the project, except for libraries. Can be removed in svelte 6.
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
@@ -29,7 +24,6 @@ export default defineConfig({
 		})
 	],
 	server: {
-		// Expose on LAN so iPad can open https://192.168.x.x:5173
 		host: true
 	}
 });
