@@ -6,23 +6,36 @@ export type ViewState = {
 	flipX: number;
 };
 
-export type BrushKind = 'pen' | 'airbrush' | 'lasso' | 'fan' | 'fanFade';
+export type ToolKind = 'pen' | 'airbrush' | 'lasso' | 'fan' | 'fanFade';
+export type BrushKind = ToolKind;
 
-export type Rect = { x: number; y: number; w: number; h: number };
+export type BrushBlend = 'wash' | 'buildup';
 
-export type RasterPatch = {
-	bounds: Rect;
-	before: Uint8Array;
-	after: Uint8Array;
+export type BrushSettings = {
+	size: number;
+	opacity: number;
+	flow: number;
+	spacing: number;
+	hardness: number;
+	smoothing: number;
+	jitter: number;
+	blend: BrushBlend;
+	pressureSize: boolean;
+	pressureOpacity: boolean;
 };
 
-export type RasterHistoryEntry = RasterPatch[];
+export type Rect = { x: number; y: number; w: number; h: number };
 
 export type LassoMode = 'fill' | 'pull';
 
 export type LassoOptions = {
 	mode: LassoMode;
 	splat: boolean;
+};
+
+export type EditApi = {
+	undo: () => void;
+	redo: () => void;
 };
 
 export type GpuPaint = {
@@ -34,43 +47,34 @@ export type GpuPaint = {
 		height: number,
 		opts?: { cropX?: number; cropY?: number }
 	) => Promise<boolean>;
-	setBrush: (brush: BrushKind) => void;
+	setTool: (tool: ToolKind) => void;
 	setLassoOptions: (opts: Partial<LassoOptions>) => void;
+	setBrushSettings: (settings: Partial<BrushSettings>) => void;
 	beginStroke: () => void;
-	endStroke: (opacity: number) => Promise<RasterHistoryEntry | null>;
+	endStroke: (opacity: number) => void;
 	cancelStroke: () => void;
-	applyRasterPatch: (bounds: Rect, pixels: Uint8Array) => void;
-	readDocument: () => Promise<Uint8Array | null>;
+	undo: () => boolean;
+	redo: () => boolean;
+	canUndo: () => boolean;
+	canRedo: () => boolean;
+	clearUndo: () => void;
 	addSample: (
 		x: number,
 		y: number,
-		brushDiameter: number,
 		sizePressure: number,
 		opacityPressure: number,
 		color: string,
-		spacingFactor?: number,
 		viewZoom?: number
 	) => void;
 	addTimedAirbrushDab: (
 		x: number,
 		y: number,
-		brushDiameter: number,
 		sizePressure: number,
 		opacityPressure: number,
 		color: string
 	) => void;
 	flushStamps: (color: string) => void;
-	sampleColor: (x: number, y: number) => Promise<string | null>;
-	samplePatch: (
-		x: number,
-		y: number,
-		radius: number
-	) => Promise<{
-		width: number;
-		height: number;
-		pixels: Uint8ClampedArray;
-		hex: string;
-	} | null>;
+	readDocument: () => Promise<Uint8Array | null>;
 	present: (view: ViewState, cssW: number, cssH: number, opacity: number, strokeActive: boolean) => void;
 	destroy: () => void;
 };
