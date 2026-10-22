@@ -1,9 +1,7 @@
 import tgpu, { d } from 'typegpu';
 import {
-	AIRBRUSH_FLOW,
-	BRUSH_SIZE,
-	DEFAULT_DOC_W,
 	DEFAULT_DOC_H,
+	DEFAULT_DOC_W,
 	FLOATS_PER_VERT,
 	GRID_BG,
 	MAX_PRESENT_DPR,
@@ -12,13 +10,14 @@ import {
 	VERTS_PER_STAMP,
 	sanitizeDocSize
 } from './constants';
+import { appendStamp, parseColor, webGpuUnavailableMessage } from './cpu';
 import {
-	appendStamp,
-	makeHardBrushPixels,
-	parseColor,
-	spacingFor,
-	webGpuUnavailableMessage
-} from './cpu';
+	BRUSH_TIP_SIZE,
+	DEFAULT_BRUSH_SETTINGS,
+	brushSpacingPx,
+	clamp01,
+	makeBrushTipPixels
+} from './brush';
 import {
 	createLassoEngine,
 	DEFAULT_LASSO_OPTIONS,
@@ -28,7 +27,6 @@ import {
 } from './lasso';
 import { createFanEngine, type FanBatch, type FanEngine, type FanKind } from './fan';
 import {
-	AirbrushUniforms,
 	CompositeUniforms,
 	FanUniforms,
 	FanVertex,
@@ -38,15 +36,26 @@ import {
 } from './schemas';
 import { createPaintPipelines } from './pipelines';
 import { createStrokeBoundsTracker } from './strokeBounds';
-import type { BrushKind, GpuPaint, LassoOptions, RasterHistoryEntry, Rect, ViewState } from './types';
+import { createGpuUndoStack } from './undo';
+import type {
+	BrushKind,
+	BrushSettings,
+	GpuPaint,
+	LassoOptions,
+	Rect,
+	ToolKind,
+	ViewState
+} from './types';
 
-function isFanBrush(b: BrushKind): b is FanKind {
+const MAX_DABS_PER_SEGMENT = 512;
+
+function isFanTool(b: ToolKind): b is FanKind {
 	return b === 'fan' || b === 'fanFade';
 }
 
 export async function createGpuPaint(
 	canvas: HTMLCanvasElement,
-	opts?: { width?: number; height?: number; pixels?: Uint8Array }
+	opts?: { width?: number; height?: number }
 ): Promise<GpuPaint> {
 	if (!navigator.gpu) throw new Error(webGpuUnavailableMessage());
 
@@ -65,6 +74,7 @@ export async function createGpuPaint(
 		throw err;
 	}
 
+	const device = root.device;
 	const format = navigator.gpu.getPreferredCanvasFormat();
 	const context = root.configureContext({ canvas, format, alphaMode: 'opaque' });
 
@@ -75,32 +85,55 @@ export async function createGpuPaint(
 		return root.createTexture({ size: [w, h], format: 'rgba8unorm' }).$usage('sampled', 'render');
 	}
 
-	let docTex = createDocTexture(docW, docH);
-	let strokeTex = createDocTexture(docW, docH);
-	let strokeTexB = createDocTexture(docW, docH);
 	function createLassoStencilTexture(w: number, h: number) {
 		return root.createTexture({ size: [w, h], format: 'stencil8' }).$usage('render');
 	}
-	let lassoStencilTex = createLassoStencilTexture(docW, docH);
-	const brushTex = root
-		.createTexture({ size: [BRUSH_SIZE, BRUSH_SIZE], format: 'rgba8unorm' })
-		.$usage('sampled');
 
-	const hardTipPixels = makeHardBrushPixels(BRUSH_SIZE);
-	brushTex.write(hardTipPixels);
+	function fillTexture(texture: GPUTexture, color: [number, number, number, number]) {
+		const encoder = device.createCommandEncoder();
+		const pass = encoder.beginRenderPass({
+			colorAttachments: [
+				{
+					view: texture.createView(),
+					clearValue: color,
+					loadOp: 'clear',
+					storeOp: 'store'
+				}
+			]
+		});
+		pass.end();
+		device.queue.submit([encoder.finish()]);
+	}
+
+	let docTex = createDocTexture(docW, docH);
+	let strokeTex = createDocTexture(docW, docH);
+	let lassoStencilTex = createLassoStencilTexture(docW, docH);
+	fillTexture(root.unwrap(docTex), [1, 1, 1, 1]);
+
+	const brushMipLevels = Math.floor(Math.log2(BRUSH_TIP_SIZE)) + 1;
+	const brushTex = root
+		.createTexture({
+			size: [BRUSH_TIP_SIZE, BRUSH_TIP_SIZE],
+			format: 'rgba8unorm',
+			mipLevelCount: brushMipLevels
+		})
+		.$usage('sampled', 'render');
+	const brushView = brushTex.createView();
 
 	let docView = docTex.createView();
 	let strokeView = strokeTex.createView();
-	const brushView = brushTex.createView();
-	let docRenderView = docTex.createView('render');
+	let docRenderView = root.unwrap(docTex).createView();
 	let strokeRawRenderView = root.unwrap(strokeTex).createView();
-	let strokeRawRenderViewB = root.unwrap(strokeTexB).createView();
 	let lassoStencilRawView = root.unwrap(lassoStencilTex).createView();
 
 	const docViewSlot = tgpu.slot<typeof docView>();
 	const strokeViewSlot = tgpu.slot<typeof strokeView>();
 
-	const linearSamp = root.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+	const linearSamp = root.createSampler({
+		magFilter: 'linear',
+		minFilter: 'linear',
+		mipmapFilter: 'linear'
+	});
 
 	const strokeUniforms = root.createUniform(StrokeUniforms, {
 		resolution: [docW, docH],
@@ -109,11 +142,6 @@ export async function createGpuPaint(
 	const fanUniforms = root.createUniform(FanUniforms, {
 		resolution: [docW, docH],
 		color: [0, 0, 0]
-	});
-	const airbrushUniforms = root.createUniform(AirbrushUniforms, {
-		resolution: [docW, docH],
-		color: [0, 0, 0],
-		flow: AIRBRUSH_FLOW
 	});
 	const compositeUniforms = root.createUniform(CompositeUniforms, { opacity: 1 });
 	type PresentUniformData = {
@@ -162,7 +190,6 @@ export async function createGpuPaint(
 		lassoVertexBuf,
 		strokeUniforms,
 		fanUniforms,
-		airbrushUniforms,
 		compositeUniforms,
 		presentUniforms,
 		brushView,
@@ -171,7 +198,7 @@ export async function createGpuPaint(
 		strokeViewSlot,
 		views: textureViews
 	});
-	const strokeWashPipeline = pipelines.strokeWashPipeline;
+
 	const rebuildDocSamplePipelines = () => {
 		textureViews.docView = docView;
 		textureViews.strokeView = strokeView;
@@ -179,12 +206,18 @@ export async function createGpuPaint(
 	};
 	rebuildDocSamplePipelines();
 
-	const initialPixels =
-		opts?.pixels?.byteLength === docW * docH * 4
-			? opts.pixels
-			: new Uint8Array(docW * docH * 4).fill(255);
-	docTex.write(initialPixels);
-	let strokeNeedsClear = true;
+	const undo = createGpuUndoStack(device);
+
+	let settings: BrushSettings = { ...DEFAULT_BRUSH_SETTINGS };
+	let brushHardness = -1;
+	function syncBrushTip() {
+		const next = clamp01(settings.hardness);
+		if (next === brushHardness) return;
+		brushHardness = next;
+		brushTex.write(makeBrushTipPixels(BRUSH_TIP_SIZE, next));
+		brushTex.generateMipmaps(0, brushMipLevels);
+	}
+	syncBrushTip();
 
 	let stampCount = 0;
 	let lastStamp: {
@@ -195,7 +228,7 @@ export async function createGpuPaint(
 	} | null = null;
 	let lastColor = '#000000';
 	let destroyed = false;
-	let currentBrush: BrushKind = 'pen';
+	let currentTool: BrushKind = 'pen';
 	let lassoOpts: LassoOptions = { ...DEFAULT_LASSO_OPTIONS };
 	const lasso: LassoEngine = createLassoEngine(docW, docH);
 	const fan: FanEngine = createFanEngine(docW, docH, 'fan');
@@ -208,6 +241,11 @@ export async function createGpuPaint(
 	let batchMaxY = 0;
 	let parsedColorHex = '';
 	let parsedColor: [number, number, number] = [0, 0, 0];
+
+	let strokeNeedsClear = false;
+	let strokeNeedsFullClear = true;
+	let strokeDirty: Rect | null = null;
+
 	function colorChannels(hex: string) {
 		if (hex !== parsedColorHex) {
 			parsedColorHex = hex;
@@ -259,51 +297,91 @@ export async function createGpuPaint(
 		});
 	}
 
+	function markStrokeDirty(rect: Rect) {
+		if (!strokeDirty) {
+			strokeDirty = { ...rect };
+			return;
+		}
+		const x0 = Math.min(strokeDirty.x, rect.x);
+		const y0 = Math.min(strokeDirty.y, rect.y);
+		const x1 = Math.max(strokeDirty.x + strokeDirty.w, rect.x + rect.w);
+		const y1 = Math.max(strokeDirty.y + strokeDirty.h, rect.y + rect.h);
+		strokeDirty = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+	}
+
 	function encodeStrokeClear(encoder: GPUCommandEncoder) {
 		if (!strokeNeedsClear) return;
-		const pass = encoder.beginRenderPass({
-			colorAttachments: [
-				{
-					view: strokeRawRenderView,
-					clearValue: [0, 0, 0, 0],
-					loadOp: 'clear',
-					storeOp: 'store'
-				}
-			]
-		});
-		pass.end();
+		if (strokeDirty) {
+			const rect = clampToDocument(strokeDirty);
+			if (rect) {
+				const pass = encoder.beginRenderPass({
+					colorAttachments: [
+						{ view: strokeRawRenderView, loadOp: 'load', storeOp: 'store' }
+					]
+				});
+				pass.setScissorRect(rect.x, rect.y, rect.w, rect.h);
+				pipelines.clearStrokePipeline.with(pass).draw(3);
+				pass.end();
+			}
+		} else if (strokeNeedsFullClear) {
+			const pass = encoder.beginRenderPass({
+				colorAttachments: [
+					{
+						view: strokeRawRenderView,
+						clearValue: [0, 0, 0, 0],
+						loadOp: 'clear',
+						storeOp: 'store'
+					}
+				]
+			});
+			pass.end();
+		}
+		strokeDirty = null;
 		strokeNeedsClear = false;
+		strokeNeedsFullClear = false;
 	}
 
 	function clearStrokeTextureNow() {
 		if (!strokeNeedsClear) return;
-		const encoder = root.device.createCommandEncoder();
+		const encoder = device.createCommandEncoder();
 		encodeStrokeClear(encoder);
-		root.device.queue.submit([encoder.finish()]);
+		device.queue.submit([encoder.finish()]);
 	}
 
 	function queueStamp(
 		x: number,
 		y: number,
-		size: number,
 		sizePressure: number,
 		opacityPressure: number
 	) {
 		if (stampCount >= MAX_STAMPS_PER_FLUSH) return;
-		const radius = size * 0.5 * Math.max(sizePressure, 0.05);
-		strokeBounds.expand(x, y, radius);
-		expandStampBatchBounds(x, y, radius);
+		const jitter = settings.jitter;
+		let px = x;
+		let py = y;
+		let extra = 0;
+		if (jitter > 0.0001) {
+			const reach = settings.size * jitter;
+			const angle = Math.random() * Math.PI * 2;
+			const dist = Math.sqrt(Math.random()) * reach;
+			px += Math.cos(angle) * dist;
+			py += Math.sin(angle) * dist;
+			extra = reach;
+		}
+		const diameter = settings.size * 2;
+		const radius = settings.size * Math.max(sizePressure, 0.05) + extra;
+		strokeBounds.expand(px, py, radius);
+		expandStampBatchBounds(px, py, radius);
+		const alpha =
+			settings.blend === 'buildup'
+				? clamp01(settings.flow) * clamp01(opacityPressure)
+				: clamp01(opacityPressure);
 		const offset = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
-		appendStamp(vertexCpu, offset, x, y, size, sizePressure, opacityPressure);
+		appendStamp(vertexCpu, offset, px, py, diameter, sizePressure, alpha);
 		stampCount++;
 	}
 
 	function paintStampsToStroke(color: string, externalEncoder?: GPUCommandEncoder) {
 		if (destroyed || stampCount === 0) return false;
-
-		if (currentBrush === 'airbrush') {
-			return paintAirbrushStamps(color, externalEncoder);
-		}
 
 		const scissor = stampBatchScissor();
 		if (!scissor) {
@@ -312,7 +390,7 @@ export async function createGpuPaint(
 			return false;
 		}
 		const floats = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
-		root.device.queue.writeBuffer(root.unwrap(vertexBuf), 0, vertexCpu.buffer, 0, floats * 4);
+		device.queue.writeBuffer(root.unwrap(vertexBuf), 0, vertexCpu.buffer, 0, floats * 4);
 
 		const [r, g, b] = colorChannels(color);
 		strokeUniforms.write({
@@ -320,22 +398,20 @@ export async function createGpuPaint(
 			color: [r, g, b, 1]
 		});
 
-		const encoder = externalEncoder ?? root.device.createCommandEncoder();
+		const encoder = externalEncoder ?? device.createCommandEncoder();
+		encodeStrokeClear(encoder);
 		const pass = encoder.beginRenderPass({
-			colorAttachments: [
-				{
-					view: strokeRawRenderView,
-					clearValue: [0, 0, 0, 0],
-					loadOp: strokeNeedsClear ? 'clear' : 'load',
-					storeOp: 'store'
-				}
-			]
+			colorAttachments: [{ view: strokeRawRenderView, loadOp: 'load', storeOp: 'store' }]
 		});
 		pass.setScissorRect(scissor.x, scissor.y, scissor.w, scissor.h);
-		strokeWashPipeline.with(pass).draw(stampCount * VERTS_PER_STAMP);
+		const pipeline =
+			settings.blend === 'buildup'
+				? pipelines.strokeBuildupPipeline
+				: pipelines.strokeWashPipeline;
+		pipeline.with(pass).draw(stampCount * VERTS_PER_STAMP);
 		pass.end();
-		strokeNeedsClear = false;
-		if (!externalEncoder) root.device.queue.submit([encoder.finish()]);
+		if (!externalEncoder) device.queue.submit([encoder.finish()]);
+		markStrokeDirty(scissor);
 		stampCount = 0;
 		resetStampBatchBounds();
 		return true;
@@ -344,7 +420,7 @@ export async function createGpuPaint(
 	function paintFanBatch(batch: FanBatch, color: string) {
 		const scissor = clampToDocument(batch.bounds);
 		if (!scissor) return;
-		root.device.queue.writeBuffer(
+		device.queue.writeBuffer(
 			root.unwrap(fanVertexBuf),
 			0,
 			batch.vertices.buffer,
@@ -353,27 +429,21 @@ export async function createGpuPaint(
 		);
 		const [r, g, b] = colorChannels(color);
 		fanUniforms.write({ resolution: [docW, docH], color: [r, g, b] });
-		const encoder = root.device.createCommandEncoder();
+		const encoder = device.createCommandEncoder();
+		encodeStrokeClear(encoder);
 		const pass = encoder.beginRenderPass({
-			colorAttachments: [
-				{
-					view: strokeRawRenderView,
-					clearValue: [0, 0, 0, 0],
-					loadOp: strokeNeedsClear ? 'clear' : 'load',
-					storeOp: 'store'
-				}
-			]
+			colorAttachments: [{ view: strokeRawRenderView, loadOp: 'load', storeOp: 'store' }]
 		});
 		pass.setScissorRect(scissor.x, scissor.y, scissor.w, scissor.h);
 		pipelines.fanPipeline.with(pass).draw(batch.vertexCount);
 		pass.end();
-		root.device.queue.submit([encoder.finish()]);
-		strokeNeedsClear = false;
+		device.queue.submit([encoder.finish()]);
+		markStrokeDirty(scissor);
 		strokeBounds.expandRect(batch.bounds);
 	}
 
 	function paintLassoFill(batch: LassoFillBatch, color: string) {
-		root.device.queue.writeBuffer(
+		device.queue.writeBuffer(
 			root.unwrap(lassoVertexBuf),
 			0,
 			batch.vertices.buffer,
@@ -383,7 +453,7 @@ export async function createGpuPaint(
 		const [r, g, b] = colorChannels(color);
 		fanUniforms.write({ resolution: [docW, docH], color: [r, g, b] });
 
-		const encoder = root.device.createCommandEncoder();
+		const encoder = device.createCommandEncoder();
 		const stencilPass = encoder.beginRenderPass({
 			colorAttachments: [],
 			depthStencilAttachment: {
@@ -417,82 +487,20 @@ export async function createGpuPaint(
 		fillPass.setScissorRect(batch.bounds.x, batch.bounds.y, batch.bounds.w, batch.bounds.h);
 		pipelines.lassoFillPipeline.with(fillPass).withStencilReference(0).draw(3);
 		fillPass.end();
-		root.device.queue.submit([encoder.finish()]);
+		device.queue.submit([encoder.finish()]);
 		strokeNeedsClear = false;
+		strokeNeedsFullClear = false;
+		strokeDirty = null;
 
 		strokeBounds.reset();
 		strokeBounds.expandRect(batch.bounds);
-	}
-
-	function paintAirbrushStamps(color: string, externalEncoder?: GPUCommandEncoder) {
-		if (stampCount === 0) return false;
-		const [r, g, b] = colorChannels(color);
-		const floats = stampCount * VERTS_PER_STAMP * FLOATS_PER_VERT;
-		root.device.queue.writeBuffer(root.unwrap(vertexBuf), 0, vertexCpu.buffer, 0, floats * 4);
-		airbrushUniforms.write({
-			resolution: [docW, docH],
-			color: [r, g, b],
-			flow: AIRBRUSH_FLOW
-		});
-
-		const encoder = externalEncoder ?? root.device.createCommandEncoder();
-		encodeStrokeClear(encoder);
-		const source = root.unwrap(strokeTex);
-		const target = root.unwrap(strokeTexB);
-
-		for (let i = 0; i < stampCount; i++) {
-			const base = i * VERTS_PER_STAMP * FLOATS_PER_VERT;
-			const x = vertexCpu[base]!;
-			const y = vertexCpu[base + 1]!;
-			const size = vertexCpu[base + 4]!;
-			const sizeP = vertexCpu[base + 5]!;
-			const radius = size * 0.5 * Math.max(sizeP, 0.05);
-			const pad = Math.ceil(radius) + 2;
-			const x0 = Math.max(0, Math.floor(x - pad));
-			const y0 = Math.max(0, Math.floor(y - pad));
-			const x1 = Math.min(docW, Math.ceil(x + pad));
-			const y1 = Math.min(docH, Math.ceil(y + pad));
-			const w = x1 - x0;
-			const h = y1 - y0;
-			if (w < 1 || h < 1) continue;
-
-			encoder.copyTextureToTexture(
-				{ texture: source, origin: [x0, y0, 0] },
-				{ texture: target, origin: [x0, y0, 0] },
-				[w, h, 1]
-			);
-
-			const pass = encoder.beginRenderPass({
-				colorAttachments: [
-					{
-						view: strokeRawRenderViewB,
-						loadOp: 'load',
-						storeOp: 'store'
-					}
-				]
-			});
-			pass.setScissorRect(x0, y0, w, h);
-			pipelines.strokeAirbrushPipeline
-				.with(pass)
-				.draw(VERTS_PER_STAMP, 1, i * VERTS_PER_STAMP);
-			pass.end();
-
-			encoder.copyTextureToTexture(
-				{ texture: target, origin: [x0, y0, 0] },
-				{ texture: source, origin: [x0, y0, 0] },
-				[w, h, 1]
-			);
-		}
-		if (!externalEncoder) root.device.queue.submit([encoder.finish()]);
-		stampCount = 0;
-		resetStampBatchBounds();
-		return true;
+		markStrokeDirty(batch.bounds);
 	}
 
 	function uploadPathDirty(result: { pixels: Uint8Array; bounds: Rect }) {
 		const { bounds, pixels } = result;
 		clearStrokeTextureNow();
-		root.device.queue.writeTexture(
+		device.queue.writeTexture(
 			{
 				texture: root.unwrap(strokeTex),
 				origin: { x: bounds.x, y: bounds.y, z: 0 }
@@ -502,17 +510,22 @@ export async function createGpuPaint(
 			{ width: bounds.w, height: bounds.h, depthOrArrayLayers: 1 }
 		);
 		strokeBounds.expandRect(bounds);
+		markStrokeDirty(bounds);
 	}
 
-	function compositeStroke(opacity: number) {
+	function compositeStroke(opacity: number, regions: Rect[], externalEncoder?: GPUCommandEncoder) {
+		if (regions.length === 0) return;
 		compositeUniforms.write({ opacity });
-		pipelines.compositePipeline
-			.withColorAttachment({
-				view: docRenderView,
-				loadOp: 'load',
-				storeOp: 'store'
-			})
-			.draw(3);
+		const encoder = externalEncoder ?? device.createCommandEncoder();
+		const pass = encoder.beginRenderPass({
+			colorAttachments: [{ view: docRenderView, loadOp: 'load', storeOp: 'store' }]
+		});
+		for (const region of regions) {
+			pass.setScissorRect(region.x, region.y, region.w, region.h);
+			pipelines.compositePipeline.with(pass).draw(3);
+		}
+		pass.end();
+		if (!externalEncoder) device.queue.submit([encoder.finish()]);
 	}
 
 	async function readTexturePixels(
@@ -526,7 +539,6 @@ export async function createGpuPaint(
 		const bytesPerPixel = 4;
 		const unpadded = w * bytesPerPixel;
 		const bytesPerRow = Math.max(256, Math.ceil(unpadded / 256) * 256);
-		const device = root.device;
 		const staging = device.createBuffer({
 			size: bytesPerRow * h,
 			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
@@ -557,95 +569,13 @@ export async function createGpuPaint(
 		}
 	}
 
-	async function readTextureRegions(texture: typeof docTex, regions: Rect[]) {
-		if (destroyed || regions.length === 0) return null;
-		const layouts = regions.map((bounds) => {
-			const unpadded = bounds.w * 4;
-			const bytesPerRow = Math.max(256, Math.ceil(unpadded / 256) * 256);
-			return { bounds, unpadded, bytesPerRow, size: bytesPerRow * bounds.h };
-		});
-		let totalSize = 0;
-		const offsets = layouts.map((layout) => {
-			const offset = totalSize;
-			totalSize += layout.size;
-			return offset;
-		});
-		const device = root.device;
-		const staging = device.createBuffer({
-			size: totalSize,
-			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-		});
-		const encoder = device.createCommandEncoder();
-		for (let i = 0; i < layouts.length; i++) {
-			const { bounds, bytesPerRow } = layouts[i]!;
-			encoder.copyTextureToBuffer(
-				{ texture: root.unwrap(texture), origin: [bounds.x, bounds.y, 0] },
-				{ buffer: staging, offset: offsets[i], bytesPerRow },
-				[bounds.w, bounds.h, 1]
-			);
-		}
-		device.queue.submit([encoder.finish()]);
-		let mapped = false;
-		try {
-			await staging.mapAsync(GPUMapMode.READ);
-			mapped = true;
-			const source = new Uint8Array(staging.getMappedRange());
-			return layouts.map(({ bounds, unpadded, bytesPerRow }, index) => {
-				const tightly = new Uint8Array(unpadded * bounds.h);
-				const base = offsets[index]!;
-				for (let row = 0; row < bounds.h; row++) {
-					tightly.set(
-						source.subarray(base + row * bytesPerRow, base + row * bytesPerRow + unpadded),
-						row * unpadded
-					);
-				}
-				return tightly;
-			});
-		} finally {
-			if (mapped) staging.unmap();
-			staging.destroy();
-		}
-	}
-
-	function readDocPixels(x0: number, y0: number, w: number, h: number) {
-		return readTexturePixels(docTex, x0, y0, w, h);
-	}
-
-	async function samplePatchAt(x: number, y: number, radius: number) {
-		if (destroyed) return null;
-		const cx = Math.floor(x);
-		const cy = Math.floor(y);
-		if (cx < 0 || cy < 0 || cx >= docW || cy >= docH) return null;
-
-		const r = Math.max(0, Math.floor(radius));
-		const full = r * 2 + 1;
-		const x0 = Math.max(0, cx - r);
-		const y0 = Math.max(0, cy - r);
-		const x1 = Math.min(docW, cx + r + 1);
-		const y1 = Math.min(docH, cy + r + 1);
-		const srcW = x1 - x0;
-		const srcH = y1 - y0;
-		if (srcW < 1 || srcH < 1) return null;
-
-		const patch = await readDocPixels(x0, y0, srcW, srcH);
-		if (!patch) return null;
-
-		const pixels = new Uint8ClampedArray(full * full * 4);
-		pixels.fill(255);
-		const destOx = x0 - (cx - r);
-		const destOy = y0 - (cy - r);
-		for (let row = 0; row < srcH; row++) {
-			const srcOff = row * srcW * 4;
-			const dstOff = ((destOy + row) * full + destOx) * 4;
-			pixels.set(patch.subarray(srcOff, srcOff + srcW * 4), dstOff);
-		}
-
-		const i = (r * full + r) * 4;
-		const hex = `#${[pixels[i], pixels[i + 1], pixels[i + 2]]
-			.map((n) => n.toString(16).padStart(2, '0'))
-			.join('')}`;
-
-		return { width: full, height: full, pixels, hex };
+	function resetStrokeState() {
+		stampCount = 0;
+		lastStamp = null;
+		resetStampBatchBounds();
+		strokeBounds.reset();
+		lasso.reset();
+		fan.reset();
 	}
 
 	return {
@@ -664,48 +594,34 @@ export async function createGpuPaint(
 			root.configureContext({ canvas, format, alphaMode: 'opaque' });
 		},
 
-		async resizeDocument(width: number, height: number, opts?: { cropX?: number; cropY?: number }) {
+		async resizeDocument(width: number, height: number, resizeOpts?: { cropX?: number; cropY?: number }) {
 			if (destroyed) return false;
 			const nextW = sanitizeDocSize(width);
 			const nextH = sanitizeDocSize(height);
-			const cropX = Math.round(opts?.cropX ?? 0);
-			const cropY = Math.round(opts?.cropY ?? 0);
-			if (nextW === docW && nextH === docH && cropX === 0 && cropY === 0) {
-				return false;
-			}
+			const cropX = Math.round(resizeOpts?.cropX ?? 0);
+			const cropY = Math.round(resizeOpts?.cropY ?? 0);
+			if (nextW === docW && nextH === docH && cropX === 0 && cropY === 0) return false;
 
-			stampCount = 0;
-			lastStamp = null;
-			lasso.reset();
-			lasso.resize(nextW, nextH);
-			fan.reset();
-			fan.resize(nextW, nextH);
-			strokeBounds.reset();
+			resetStrokeState();
+			undo.clear();
 			const oldW = docW;
 			const oldH = docH;
 
-			const oldPixels = await readDocPixels(0, 0, oldW, oldH);
-			if (!oldPixels || destroyed) return false;
-
 			const oldDoc = docTex;
 			const oldStroke = strokeTex;
-			const oldStrokeB = strokeTexB;
 			const oldLassoStencil = lassoStencilTex;
 
 			docW = nextW;
 			docH = nextH;
 			docTex = createDocTexture(nextW, nextH);
 			strokeTex = createDocTexture(nextW, nextH);
-			strokeTexB = createDocTexture(nextW, nextH);
 			lassoStencilTex = createLassoStencilTexture(nextW, nextH);
 			docView = docTex.createView();
 			strokeView = strokeTex.createView();
-			docRenderView = docTex.createView('render');
+			docRenderView = root.unwrap(docTex).createView();
 			strokeRawRenderView = root.unwrap(strokeTex).createView();
-			strokeRawRenderViewB = root.unwrap(strokeTexB).createView();
 			lassoStencilRawView = root.unwrap(lassoStencilTex).createView();
 
-			const pixels = new Uint8Array(nextW * nextH * 4).fill(255);
 			const srcX0 = Math.max(0, cropX);
 			const srcY0 = Math.max(0, cropY);
 			const srcX1 = Math.min(oldW, cropX + nextW);
@@ -714,40 +630,52 @@ export async function createGpuPaint(
 			const dstY = srcY0 - cropY;
 			const copyW = srcX1 - srcX0;
 			const copyH = srcY1 - srcY0;
+
+			fillTexture(root.unwrap(docTex), [1, 1, 1, 1]);
 			if (copyW > 0 && copyH > 0) {
-				for (let row = 0; row < copyH; row++) {
-					const srcOff = ((srcY0 + row) * oldW + srcX0) * 4;
-					const dstOff = ((dstY + row) * nextW + dstX) * 4;
-					pixels.set(oldPixels.subarray(srcOff, srcOff + copyW * 4), dstOff);
-				}
+				const encoder = device.createCommandEncoder();
+				encoder.copyTextureToTexture(
+					{ texture: root.unwrap(oldDoc), origin: { x: srcX0, y: srcY0, z: 0 } },
+					{ texture: root.unwrap(docTex), origin: { x: dstX, y: dstY, z: 0 } },
+					{ width: copyW, height: copyH, depthOrArrayLayers: 1 }
+				);
+				device.queue.submit([encoder.finish()]);
 			}
 
-			docTex.write(pixels);
-			strokeNeedsClear = true;
+			strokeNeedsClear = false;
+			strokeNeedsFullClear = true;
+			strokeDirty = null;
 			resetStampBatchBounds();
+			lasso.resize(nextW, nextH);
+			fan.resize(nextW, nextH);
 			rebuildDocSamplePipelines();
 
-			void root.device.queue.onSubmittedWorkDone().then(() => {
+			void device.queue.onSubmittedWorkDone().then(() => {
 				oldDoc.destroy();
 				oldStroke.destroy();
-				oldStrokeB.destroy();
 				oldLassoStencil.destroy();
 			});
 
 			return true;
 		},
 
-		setBrush(brush: BrushKind) {
+		setTool(tool: ToolKind) {
 			if (destroyed) return;
-			currentBrush = brush;
-			if (isFanBrush(brush)) fan.setKind(brush);
+			currentTool = tool;
+			if (isFanTool(tool)) fan.setKind(tool);
 		},
 
-		setLassoOptions(opts: Partial<LassoOptions>) {
+		setLassoOptions(next: Partial<LassoOptions>) {
 			if (destroyed) return;
-			if (opts.mode !== undefined) lassoOpts.mode = opts.mode;
-			if (opts.splat !== undefined) lassoOpts.splat = opts.splat;
+			if (next.mode !== undefined) lassoOpts.mode = next.mode;
+			if (next.splat !== undefined) lassoOpts.splat = next.splat;
 			lasso.setOptions(lassoOpts);
+		},
+
+		setBrushSettings(next: Partial<BrushSettings>) {
+			if (destroyed) return;
+			settings = { ...settings, ...next };
+			syncBrushTip();
 		},
 
 		beginStroke() {
@@ -756,67 +684,54 @@ export async function createGpuPaint(
 			lastStamp = null;
 			stampCount = 0;
 			resetStampBatchBounds();
-			if (currentBrush === 'lasso') {
+			strokeBounds.reset();
+			if (currentTool === 'lasso') {
 				lasso.setOptions(lassoOpts);
 				lasso.begin(lastColor);
-			} else if (isFanBrush(currentBrush)) {
-				fan.setKind(currentBrush);
+			} else if (isFanTool(currentTool)) {
+				fan.setKind(currentTool);
 				fan.begin(lastColor);
 			}
-			strokeBounds.reset();
 		},
 
-		async endStroke(opacity: number): Promise<RasterHistoryEntry | null> {
-			if (destroyed) return null;
+		endStroke(opacity: number) {
+			if (destroyed) return;
 
-			if (currentBrush === 'lasso') {
+			if (currentTool === 'lasso') {
 				stampCount = 0;
 				const flushed = lasso.flush();
 				if (flushed) paintLassoFill(flushed, lastColor);
-				const ok = lasso.hasDrawable();
 				const final = lasso.finalizeBounds();
 				lasso.reset();
-				if (!ok || !final) {
-					lastStamp = null;
-					strokeBounds.reset();
-					return null;
+				if (!final) {
+					resetStrokeState();
+					strokeNeedsClear = true;
+					return;
 				}
 				strokeBounds.expandRect(final);
-			} else if (isFanBrush(currentBrush)) {
+			} else if (isFanTool(currentTool)) {
 				stampCount = 0;
 				const flushed = fan.flush();
 				if (flushed) paintFanBatch(flushed, lastColor);
-				const ok = fan.hasDrawable();
 				const final = fan.finalizeBounds();
 				fan.reset();
-				if (!ok || !final) {
-					lastStamp = null;
-					strokeBounds.reset();
-					return null;
+				if (!final) {
+					resetStrokeState();
+					strokeNeedsClear = true;
+					return;
 				}
 				strokeBounds.expandRect(final);
 			} else {
 				paintStampsToStroke(lastColor);
 			}
 
-			const regions = strokeBounds.finalizeRegions(docW, docH);
-			let serializedPatch: Promise<RasterHistoryEntry | null> | null = null;
-			if (regions.length > 0) {
-				const beforePromise = readTextureRegions(docTex, regions);
-				compositeStroke(opacity);
-				const afterPromise = readTextureRegions(docTex, regions);
-				serializedPatch = Promise.all([beforePromise, afterPromise]).then(
-					([beforePixels, afterPixels]) => {
-						if (!beforePixels || !afterPixels) return null;
-						return regions.map((bounds, index) => ({
-							bounds: { ...bounds },
-							before: beforePixels[index]!,
-							after: afterPixels[index]!
-						}));
-					}
-				);
-			} else {
-				compositeStroke(opacity);
+			const bounds = strokeBounds.finalize(docW, docH);
+			if (bounds) {
+				const regions = strokeBounds.finalizeRegions(docW, docH);
+				const encoder = device.createCommandEncoder();
+				undo.capture(root.unwrap(docTex), bounds, encoder);
+				compositeStroke(opacity, regions, encoder);
+				device.queue.submit([encoder.finish()]);
 			}
 
 			strokeNeedsClear = true;
@@ -826,7 +741,6 @@ export async function createGpuPaint(
 			lasso.reset();
 			fan.reset();
 			strokeBounds.reset();
-			return serializedPatch ? await serializedPatch : null;
 		},
 
 		cancelStroke() {
@@ -840,60 +754,68 @@ export async function createGpuPaint(
 			strokeBounds.reset();
 		},
 
-		applyRasterPatch(bounds: Rect, pixels: Uint8Array) {
-			if (destroyed || pixels.byteLength !== bounds.w * bounds.h * 4) return;
-			root.device.queue.writeTexture(
-				{
-					texture: root.unwrap(docTex),
-					origin: { x: bounds.x, y: bounds.y, z: 0 }
-				},
-				pixels,
-				{ bytesPerRow: bounds.w * 4, rowsPerImage: bounds.h },
-				{ width: bounds.w, height: bounds.h, depthOrArrayLayers: 1 }
-			);
+		undo() {
+			if (destroyed) return false;
+			return undo.undo(root.unwrap(docTex));
+		},
+
+		redo() {
+			if (destroyed) return false;
+			return undo.redo(root.unwrap(docTex));
+		},
+
+		canUndo() {
+			return !destroyed && undo.canUndo();
+		},
+
+		canRedo() {
+			return !destroyed && undo.canRedo();
+		},
+
+		clearUndo() {
+			undo.clear();
 		},
 
 		readDocument() {
-			return readDocPixels(0, 0, docW, docH);
+			return readTexturePixels(docTex, 0, 0, docW, docH);
 		},
 
 		addSample(
 			x: number,
 			y: number,
-			brushDiameter: number,
 			sizePressure: number,
 			opacityPressure: number,
 			color: string,
-			spacingFactor = 0.005,
 			viewZoom = 1
 		) {
 			if (destroyed) return;
 			lastColor = color;
-			const sizeP = Math.min(1, Math.max(0, sizePressure));
-			const opacP = Math.min(1, Math.max(0, opacityPressure));
 
-			if (currentBrush === 'lasso') {
+			if (currentTool === 'lasso') {
 				const dirty = lasso.sample(x, y, color);
 				if (dirty?.kind === 'fill') paintLassoFill(dirty, color);
 				else if (dirty) uploadPathDirty(dirty);
 				return;
 			}
 
-			if (isFanBrush(currentBrush)) {
+			if (isFanTool(currentTool)) {
 				const dirty = fan.sample(x, y, color);
 				if (dirty) paintFanBatch(dirty, color);
 				return;
 			}
 
+			const sizeP = clamp01(sizePressure);
+			const opacP = clamp01(opacityPressure);
 			if (sizeP <= 0 && opacP <= 0) return;
-			const spacing = spacingFor(
-				brushDiameter * Math.max(sizeP, 0.05),
-				spacingFactor,
+			const diameter = settings.size * 2;
+			const spacing = brushSpacingPx(
+				diameter * Math.max(sizeP, 0.05),
+				settings.spacing,
 				viewZoom
 			);
 
 			if (!lastStamp) {
-				queueStamp(x, y, brushDiameter, sizeP, opacP);
+				queueStamp(x, y, sizeP, opacP);
 				lastStamp = { x, y, sizePressure: sizeP, opacityPressure: opacP };
 				if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
 				return;
@@ -906,13 +828,13 @@ export async function createGpuPaint(
 
 			const prevSizeP = lastStamp.sizePressure;
 			const prevOpacP = lastStamp.opacityPressure;
-			const steps = Math.floor(dist / spacing);
+			let steps = Math.floor(dist / spacing);
+			if (steps > MAX_DABS_PER_SEGMENT) steps = MAX_DABS_PER_SEGMENT;
 			for (let i = 1; i <= steps; i++) {
 				const t = i / steps;
 				queueStamp(
 					lastStamp.x + dx * t,
 					lastStamp.y + dy * t,
-					brushDiameter,
 					prevSizeP + (sizeP - prevSizeP) * t,
 					prevOpacP + (opacP - prevOpacP) * t
 				);
@@ -924,45 +846,39 @@ export async function createGpuPaint(
 		addTimedAirbrushDab(
 			x: number,
 			y: number,
-			brushDiameter: number,
 			sizePressure: number,
 			opacityPressure: number,
 			color: string
 		) {
-			if (destroyed || currentBrush !== 'airbrush') return;
+			if (destroyed || currentTool !== 'airbrush') return;
 			lastColor = color;
-			const sizeP = Math.min(1, Math.max(0, sizePressure));
-			const opacP = Math.min(1, Math.max(0, opacityPressure));
+			const sizeP = clamp01(sizePressure);
+			const opacP = clamp01(opacityPressure);
 			if (sizeP <= 0 && opacP <= 0) return;
-			queueStamp(x, y, brushDiameter, sizeP, opacP);
-			if (stampCount >= MAX_STAMPS_PER_FLUSH) paintAirbrushStamps(color);
+			queueStamp(x, y, sizeP, opacP);
+			if (stampCount >= MAX_STAMPS_PER_FLUSH) paintStampsToStroke(color);
 		},
 
 		flushStamps(color: string) {
+			if (destroyed) return;
 			lastColor = color;
-			if (currentBrush === 'lasso') {
+			if (currentTool === 'lasso') {
 				const dirty = lasso.flush();
 				if (dirty) paintLassoFill(dirty, color);
 				return;
 			}
-			if (isFanBrush(currentBrush)) {
+			if (isFanTool(currentTool)) {
 				const dirty = fan.flush();
 				if (dirty) paintFanBatch(dirty, color);
 				return;
 			}
+			paintStampsToStroke(color);
 		},
-
-		async sampleColor(x: number, y: number) {
-			const patch = await samplePatchAt(x, y, 0);
-			return patch?.hex ?? null;
-		},
-
-		samplePatch: samplePatchAt,
 
 		present(view: ViewState, cssW: number, cssH: number, opacity: number, strokeActive: boolean) {
 			if (destroyed || cssW < 1 || cssH < 1) return;
 
-			const encoder = root.device.createCommandEncoder();
+			const encoder = device.createCommandEncoder();
 			paintStampsToStroke(lastColor, encoder);
 			const inverseRotation = -view.rotation;
 			presentUniformData.viewport[0] = cssW;
@@ -993,11 +909,12 @@ export async function createGpuPaint(
 					storeOp: 'store'
 				})
 				.draw(3);
-			root.device.queue.submit([encoder.finish()]);
+			device.queue.submit([encoder.finish()]);
 		},
 
 		destroy() {
 			destroyed = true;
+			undo.clear();
 			lasso.reset();
 			fan.reset();
 			lassoStencilTex.destroy();

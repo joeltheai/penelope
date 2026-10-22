@@ -1,5 +1,3 @@
-import type { Rect } from './types';
-
 const CORNERS: [number, number][] = [
 	[-1, -1],
 	[1, -1],
@@ -22,66 +20,6 @@ export function parseColor(hex: string): [number, number, number] {
 	return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
-export function makeHardBrushPixels(size: number): Uint8Array {
-	const pixels = new Uint8Array(size * size * 4);
-	const aa = 1.25 / size;
-	for (let y = 0; y < size; y++) {
-		for (let x = 0; x < size; x++) {
-			const dx = (x + 0.5) / size - 0.5;
-			const dy = (y + 0.5) / size - 0.5;
-			const r = Math.hypot(dx, dy) * 2;
-			const a = r >= 1 ? 0 : r > 1 - aa ? (1 - r) / aa : 1;
-			const i = (y * size + x) * 4;
-			pixels[i] = 255;
-			pixels[i + 1] = 255;
-			pixels[i + 2] = 255;
-			pixels[i + 3] = Math.round(a * 255);
-		}
-	}
-	return pixels;
-}
-
-export function rasterizePolygonEvenOdd(
-	points: { x: number; y: number }[],
-	bounds: Rect,
-	r: number,
-	g: number,
-	b: number
-): Uint8Array {
-	const { x: bx, y: by, w, h } = bounds;
-	const pixels = new Uint8Array(w * h * 4);
-	const n = points.length;
-	const pr = Math.round(r * 255);
-	const pg = Math.round(g * 255);
-	const pb = Math.round(b * 255);
-
-	for (let row = 0; row < h; row++) {
-		const y = by + row + 0.5;
-		const xs: number[] = [];
-		for (let i = 0; i < n; i++) {
-			const a = points[i]!;
-			const c = points[(i + 1) % n]!;
-			if (a.y === c.y) continue;
-			if ((a.y > y) === (c.y > y)) continue;
-			const t = (y - a.y) / (c.y - a.y);
-			xs.push(a.x + t * (c.x - a.x));
-		}
-		xs.sort((u, v) => u - v);
-		for (let k = 0; k + 1 < xs.length; k += 2) {
-			const x0 = Math.max(bx, Math.floor(xs[k]!));
-			const x1 = Math.min(bx + w, Math.ceil(xs[k + 1]!));
-			for (let x = x0; x < x1; x++) {
-				const i = (row * w + (x - bx)) * 4;
-				pixels[i] = pr;
-				pixels[i + 1] = pg;
-				pixels[i + 2] = pb;
-				pixels[i + 3] = 255;
-			}
-		}
-	}
-	return pixels;
-}
-
 export function appendStamp(
 	out: Float32Array,
 	offset: number,
@@ -102,11 +40,6 @@ export function appendStamp(
 		out[o++] = opacityPressure;
 	}
 	return o;
-}
-
-export function spacingFor(size: number, spacingFactor: number, viewZoom = 1) {
-	const screenPixelFloor = 0.5 / Math.max(0.05, viewZoom);
-	return Math.max(0.25, screenPixelFloor, size * spacingFactor);
 }
 
 export function webGpuUnavailableMessage(): string {

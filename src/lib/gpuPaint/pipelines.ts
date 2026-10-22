@@ -19,7 +19,6 @@ export function createPaintPipelines(deps: {
 	lassoVertexBuf: any;
 	strokeUniforms: any;
 	fanUniforms: any;
-	airbrushUniforms: any;
 	compositeUniforms: any;
 	presentUniforms: any;
 	brushView: any;
@@ -38,7 +37,6 @@ export function createPaintPipelines(deps: {
 		lassoVertexBuf,
 		strokeUniforms,
 		fanUniforms,
-		airbrushUniforms,
 		compositeUniforms,
 		presentUniforms,
 		brushView,
@@ -116,78 +114,14 @@ export function createPaintPipelines(deps: {
 		return d.vec4f(color.rgb * a, a);
 	});
 
-	const airbrushVertex = tgpu.vertexFn({
-		in: {
-			pos: d.vec2f,
-			corner: d.vec2f,
-			size: d.f32,
-			sizePressure: d.f32,
-			opacityPressure: d.f32
-		},
-		out: {
-			position: d.builtin.position,
-			tipUv: d.vec2f,
-			docUv: d.vec2f,
-			opacityPressure: d.f32
-		}
-	})((input) => {
+	const clearFragment = tgpu.fragmentFn({ out: d.vec4f })(() => {
 		'use gpu';
-		const half = input.size * 0.5 * input.sizePressure;
-		const pixel = input.pos + input.corner * half;
-		const res = airbrushUniforms.$.resolution;
-		const clip = (pixel / res) * d.vec2f(2, -2) + d.vec2f(-1, 1);
-		return {
-			position: d.vec4f(clip, 0, 1),
-			tipUv: input.corner * 0.5 + 0.5,
-			docUv: pixel / res,
-			opacityPressure: input.opacityPressure
-		};
+		return d.vec4f(0, 0, 0, 0);
 	});
 
-	let strokeAirbrushPipeline: ReturnType<typeof buildAirbrushPipeline>;
 	let compositePipeline: ReturnType<typeof buildCompositePipeline>;
 	let presentIdlePipeline: ReturnType<typeof buildPresentPipeline>;
 	let presentStrokePipeline: ReturnType<typeof buildPresentPipeline>;
-
-	function buildAirbrushPipeline() {
-		const airbrushFragment = tgpu.fragmentFn({
-			in: { tipUv: d.vec2f, docUv: d.vec2f, opacityPressure: d.f32 },
-			out: d.vec4f
-		})((input) => {
-			'use gpu';
-			const u = airbrushUniforms.$;
-			const dst = std.textureSample(strokeViewSlot.$, linearSamp.$, input.docUv);
-			const dstA = dst.a;
-
-			const delta = input.tipUv - d.vec2f(0.5);
-			const r = std.length(delta) * 2;
-			const inside = std.select(0, 1, r < 1);
-			const msk = std.exp(-r * r * 3.2) * inside;
-
-			const opacity = input.opacityPressure;
-			const targetA = std.max(dstA, opacity);
-			const newA = std.mix(dstA, targetA, u.flow * msk);
-			const C = d.vec3f(u.color);
-			return d.vec4f(C * newA, newA);
-		});
-
-		return root
-			.with(strokeViewSlot, views.strokeView)
-			.createRenderPipeline({
-				attribs: { ...stampLayout.attrib },
-				vertex: airbrushVertex,
-				fragment: airbrushFragment,
-				targets: {
-					format: 'rgba8unorm',
-					blend: {
-						color: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' },
-						alpha: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' }
-					}
-				},
-				primitive: { topology: 'triangle-list' }
-			})
-			.with(stampLayout, vertexBuf);
-	}
 
 	function buildCompositePipeline() {
 		const compositeFragment = tgpu.fragmentFn({
@@ -287,7 +221,6 @@ export function createPaintPipelines(deps: {
 	}
 
 	function rebuildDocSamplePipelines() {
-		strokeAirbrushPipeline = buildAirbrushPipeline();
 		compositePipeline = buildCompositePipeline();
 		presentIdlePipeline = buildPresentPipeline(false);
 		presentStrokePipeline = buildPresentPipeline(true);
@@ -308,6 +241,35 @@ export function createPaintPipelines(deps: {
 			primitive: { topology: 'triangle-list' }
 		})
 		.with(stampLayout, vertexBuf);
+
+	const strokeBuildupPipeline = root
+		.createRenderPipeline({
+			attribs: { ...stampLayout.attrib },
+			vertex: strokeVertex,
+			fragment: strokeFragment,
+			targets: {
+				format: 'rgba8unorm',
+				blend: {
+					color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+					alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
+				}
+			},
+			primitive: { topology: 'triangle-list' }
+		})
+		.with(stampLayout, vertexBuf);
+
+	const clearStrokePipeline = root.createRenderPipeline({
+		vertex: common.fullScreenTriangle,
+		fragment: clearFragment,
+		targets: {
+			format: 'rgba8unorm',
+			blend: {
+				color: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' },
+				alpha: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' }
+			}
+		},
+		primitive: { topology: 'triangle-list' }
+	});
 
 	const fanPipeline = root
 		.createRenderPipeline({
@@ -354,15 +316,13 @@ export function createPaintPipelines(deps: {
 		primitive: { topology: 'triangle-list' }
 	});
 
-
 	return {
 		strokeWashPipeline,
+		strokeBuildupPipeline,
+		clearStrokePipeline,
 		fanPipeline,
 		lassoStencilPipeline,
 		lassoFillPipeline,
-		get strokeAirbrushPipeline() {
-			return strokeAirbrushPipeline;
-		},
 		get compositePipeline() {
 			return compositePipeline;
 		},
