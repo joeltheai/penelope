@@ -121,6 +121,15 @@ function applyStartRamp(pressure: number, state: PenPressureState) {
 }
 
 export function getStrokePressure(e: PointerEvent, state: PenPressureState) {
+	// Mouse and touch report no usable pressure: paint at full strength from the first dab
+	// instead of ramping up from zero.
+	if (!state.hasPressure && !state.usingPen) {
+		state.history.length = 0;
+		state.prevPressure = 1;
+		state.pressure = 1;
+		return 1;
+	}
+
 	const isDown = e.type === 'pointerdown';
 	let raw = readRawPressure(e, state);
 

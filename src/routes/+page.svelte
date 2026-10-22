@@ -1,33 +1,27 @@
 <script lang="ts">
 	import PaintCanvas from '$lib/PaintCanvas.svelte';
-	import HistoryGraphDialog from '$lib/HistoryGraphDialog.svelte';
 	import ColorPicker from '$lib/ColorPicker.svelte';
-	import SliderSize from '$lib/SliderSize.svelte';
-	import SliderOpacity from '$lib/SliderOpacity.svelte';
-	import SliderSpacing from '$lib/SliderSpacing.svelte';
+	import Slider from '$lib/Slider.svelte';
 	import {
-		type BrushKind,
+		AIRBRUSH_PRESET,
+		DEFAULT_BRUSH_SETTINGS,
+		DEFAULT_DOC_W,
+		DEFAULT_DOC_H,
+		PEN_PRESET,
+		type BrushBlend,
+		type BrushSettings,
+		type EditApi,
 		type LassoMode,
 		type LassoOptions,
-		DEFAULT_DOC_W,
-		DEFAULT_DOC_H
+		type ToolKind
 	} from '$lib/gpuPaint';
-	import {
-		EMPTY_HISTORY_STATE,
-		type HistoryApi,
-		type HistoryUiState
-	} from '$lib/historyStore';
 
-	const BRUSHES: {
-		id: BrushKind;
-		label: string;
-		spacing: number;
-	}[] = [
-		{ id: 'pen', label: 'Pen', spacing: 0.005 },
-		{ id: 'airbrush', label: 'Airbrush', spacing: 0.12 },
-		{ id: 'lasso', label: 'Lasso', spacing: 0.02 },
-		{ id: 'fan', label: 'Fan', spacing: 0.02 },
-		{ id: 'fanFade', label: 'Fan Fade', spacing: 0.02 }
+	const TOOLS: { id: ToolKind; label: string }[] = [
+		{ id: 'pen', label: 'Pen' },
+		{ id: 'airbrush', label: 'Airbrush' },
+		{ id: 'lasso', label: 'Lasso' },
+		{ id: 'fan', label: 'Fan' },
+		{ id: 'fanFade', label: 'Fan Fade' }
 	];
 
 	const LASSO_MODES: { id: LassoMode; label: string }[] = [
@@ -35,36 +29,39 @@
 		{ id: 'pull', label: 'Pull-Shape' }
 	];
 
+	const BLEND_MODES: { id: BrushBlend; label: string; hint: string }[] = [
+		{ id: 'wash', label: 'Wash', hint: 'Uniform coverage — opacity builds to the brush opacity' },
+		{ id: 'buildup', label: 'Build', hint: 'Paint accumulates with each dab (airbrush)' }
+	];
+
+	const pan = (v: number) => `${Math.round(v * 100)}%`;
+	const sizeLabel = (v: number) => `${Math.round(v * 2)} px`;
+
 	let color = $state('#1a6cff');
-	let size = $state(8);
-	let opacity = $state(1);
-	let spacing = $state(0.005);
-	let brush = $state<BrushKind>('pen');
+	let brushSettings = $state<BrushSettings>({ ...DEFAULT_BRUSH_SETTINGS });
+	let brush = $state<ToolKind>('pen');
 	let lassoOptions = $state<LassoOptions>({
 		mode: 'fill',
 		splat: false
 	});
-	let pressureSize = $state(false);
-	let pressureOpacity = $state(true);
 	let canUndo = $state(false);
 	let canRedo = $state(false);
-	let historyApi = $state<HistoryApi | null>(null);
-	let historyState = $state<HistoryUiState>({ ...EMPTY_HISTORY_STATE });
+	let editApi = $state<EditApi | null>(null);
 	let docW = $state(DEFAULT_DOC_W);
 	let docH = $state(DEFAULT_DOC_H);
 	let zoom = $state(1);
-	let spacingOpen = $state(false);
 	let eyedropper = $state(false);
 	let resizeMode = $state(false);
 	let mirrorView = $state(false);
-	let historyOpen = $state(false);
 
-	const PANEL_KEY = 'penelope.sliderPanel';
+	const PANEL_KEY = 'penelope.brushPanel';
 	let panelX = $state(12);
 	let panelY = $state(0);
 	let panelReady = $state(false);
 	let draggingPanel = $state(false);
 	let panelEl: HTMLElement | undefined = $state();
+
+	let isBrush = $derived(brush === 'pen' || brush === 'airbrush');
 
 	$effect(() => {
 		try {
@@ -74,17 +71,17 @@
 				panelX = saved.x;
 				panelY = saved.y;
 			} else {
-				panelY = Math.round(window.innerHeight / 2 - 140);
+				panelY = Math.round(window.innerHeight / 2 - 210);
 			}
 		} catch {
-			panelY = Math.round(window.innerHeight / 2 - 140);
+			panelY = Math.round(window.innerHeight / 2 - 210);
 		}
 		panelReady = true;
 	});
 
 	function clampPanel(x: number, y: number) {
-		const w = panelEl?.offsetWidth ?? 40;
-		const h = panelEl?.offsetHeight ?? 280;
+		const w = panelEl?.offsetWidth ?? 200;
+		const h = panelEl?.offsetHeight ?? 320;
 		const maxX = Math.max(0, window.innerWidth - w);
 		const maxY = Math.max(0, window.innerHeight - h);
 		return {
@@ -133,32 +130,19 @@
 		handle.addEventListener('pointercancel', onUp);
 	}
 
-	function selectBrush(next: (typeof BRUSHES)[number]) {
-		brush = next.id;
-		spacing = next.spacing;
-		spacingOpen = false;
+	function selectBrush(id: ToolKind) {
+		brush = id;
+		if (id === 'pen') brushSettings = { ...brushSettings, ...PEN_PRESET };
+		else if (id === 'airbrush') brushSettings = { ...brushSettings, ...AIRBRUSH_PRESET };
 	}
 
 	function onBrushChange(event: Event) {
-		const id = (event.currentTarget as HTMLSelectElement).value as BrushKind;
-		const next = BRUSHES.find((item) => item.id === id);
-		if (next) selectBrush(next);
-	}
-
-	function toggleSpacing() {
-		spacingOpen = !spacingOpen;
-	}
-
-	function closeSpacing() {
-		spacingOpen = false;
+		selectBrush((event.currentTarget as HTMLSelectElement).value as ToolKind);
 	}
 
 	function toggleResizeMode() {
 		resizeMode = !resizeMode;
-		if (resizeMode) {
-			spacingOpen = false;
-			eyedropper = false;
-		}
+		if (resizeMode) eyedropper = false;
 	}
 
 	const toolBtn =
@@ -171,37 +155,24 @@
 		'flex h-7 items-center justify-center rounded bg-[#4a4a52] px-2 text-[10px] font-medium whitespace-nowrap text-white shadow-[inset_0_1px_2px_rgba(0,0,0,0.45),0_1px_0_rgba(255,255,255,0.06)]';
 	const toolSelect =
 		'h-7 min-w-28 rounded border border-white/10 bg-[#2a2a2e] px-2 text-[11px] font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.35)] outline-none focus:border-white/30';
+	const panelBox =
+		'w-[184px] rounded-lg bg-[#1e1e22] p-2 shadow-[0_8px_24px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]';
 </script>
-
-<svelte:window
-	onpointerdown={(e) => {
-		if (!spacingOpen) return;
-		const t = e.target;
-		if (t instanceof Element && t.closest('[data-spacing-menu]')) return;
-		closeSpacing();
-	}}
-/>
 
 <PaintCanvas
 	bind:color
-	bind:size
-	bind:opacity
-	bind:spacing
+	bind:brushSettings
 	bind:brush
 	bind:lassoOptions
-	bind:pressureSize
-	bind:pressureOpacity
 	bind:canUndo
 	bind:canRedo
-	bind:historyApi
-	bind:historyState
+	bind:editApi
 	bind:docW
 	bind:docH
 	bind:zoom
 	bind:eyedropper
 	bind:resizeMode
 	bind:mirrorView
-	suspended={historyOpen}
 />
 
 {#if !resizeMode}
@@ -218,7 +189,7 @@
 				type="button"
 				class="flex h-5 w-full cursor-grab items-center justify-center rounded-md bg-[#2a2a2e] text-white/35 touch-none active:cursor-grabbing
 					{draggingPanel ? 'cursor-grabbing bg-[#34343a]' : ''}"
-				aria-label="Move sliders"
+				aria-label="Move brush panel"
 				title="Drag to move"
 				onpointerdown={onPanelDragStart}
 			>
@@ -235,22 +206,92 @@
 					<circle cx="16" cy="16" r="1.5" />
 				</svg>
 			</button>
-			{#if brush === 'pen' || brush === 'airbrush'}
-				<SliderSize bind:value={size} {zoom} />
-			{/if}
-			<SliderOpacity bind:value={opacity} />
+
+			<div class={panelBox}>
+				{#if isBrush}
+					<div class="flex flex-col gap-1.5">
+						<Slider
+							bind:value={brushSettings.size}
+							min={1}
+							max={160}
+							step={0.5}
+							label="Size"
+							format={sizeLabel}
+						/>
+						<Slider
+							bind:value={brushSettings.opacity}
+							min={0}
+							max={1}
+							step={0.01}
+							label="Opacity"
+							format={pan}
+						/>
+						<Slider
+							bind:value={brushSettings.flow}
+							min={0}
+							max={1}
+							step={0.01}
+							label="Flow"
+							format={pan}
+							disabled={brushSettings.blend === 'wash'}
+							title="Flow — applies in Build mode"
+						/>
+						<Slider
+							bind:value={brushSettings.spacing}
+							min={0.01}
+							max={0.4}
+							step={0.005}
+							label="Spacing"
+							format={pan}
+						/>
+						<Slider
+							bind:value={brushSettings.hardness}
+							min={0}
+							max={1}
+							step={0.01}
+							label="Hardness"
+							format={pan}
+						/>
+						<Slider
+							bind:value={brushSettings.smoothing}
+							min={0}
+							max={1}
+							step={0.01}
+							label="Smoothing"
+							format={pan}
+						/>
+						<Slider
+							bind:value={brushSettings.jitter}
+							min={0}
+							max={1}
+							step={0.01}
+							label="Jitter"
+							format={pan}
+						/>
+					</div>
+				{:else}
+					<Slider
+						bind:value={brushSettings.opacity}
+						min={0}
+						max={1}
+						step={0.01}
+						label="Opacity"
+						format={pan}
+					/>
+				{/if}
+			</div>
 		</div>
 	{/if}
 {/if}
 
-<div class="fixed top-4 left-4 z-50 flex max-w-[calc(100vw-2rem)] flex-col gap-1.5">
+<div class="fixed top-4 left-4 z-50 flex max-w-[calc(100vw-2rem)] flex-col items-start gap-1.5">
 	{#if !resizeMode}
 		<label class="flex items-center gap-1.5 rounded-md bg-[#1e1e22] p-1 text-[11px] text-white/60">
 			<span class="pl-1">Tool</span>
 			<select class={toolSelect} value={brush} aria-label="Tool" onchange={onBrushChange}>
-			{#each BRUSHES as b (b.id)}
-				<option value={b.id}>{b.label}</option>
-			{/each}
+				{#each TOOLS as t (t.id)}
+					<option value={t.id}>{t.label}</option>
+				{/each}
 			</select>
 		</label>
 
@@ -282,50 +323,42 @@
 					Splat: {lassoOptions.splat ? 'On' : 'Off'}
 				</button>
 			</div>
-		{:else if brush === 'pen' || brush === 'airbrush'}
+		{:else if isBrush}
 			<div class="flex flex-wrap gap-1" role="group" aria-label="Brush settings">
-				<button
-					type="button"
-					class={pressureSize ? settingBtnOn : settingBtn}
-					aria-label={pressureSize ? 'Pressure controls size' : 'Fixed size'}
-					aria-pressed={pressureSize}
-					onclick={() => (pressureSize = !pressureSize)}
-				>
-					Size pressure: {pressureSize ? 'On' : 'Off'}
-				</button>
-				<button
-					type="button"
-					class={pressureOpacity ? settingBtnOn : settingBtn}
-					aria-label={pressureOpacity ? 'Pressure controls opacity' : 'Fixed opacity'}
-					aria-pressed={pressureOpacity}
-					onclick={() => (pressureOpacity = !pressureOpacity)}
-				>
-					Opacity pressure: {pressureOpacity ? 'On' : 'Off'}
-				</button>
-
-				<div class="relative" data-spacing-menu>
-					<button
-						type="button"
-						class={spacingOpen ? settingBtnOn : settingBtn}
-						aria-label="Brush spacing"
-						title="Spacing"
-						aria-expanded={spacingOpen}
-						aria-haspopup="dialog"
-						onclick={toggleSpacing}
-					>
-						Spacing
-					</button>
-
-					{#if spacingOpen}
-						<div
-							class="absolute top-0 left-full z-20 ml-2 rounded-lg bg-[#1e1e22] p-2 shadow-[0_8px_24px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
-							role="dialog"
-							aria-label="Brush spacing"
+				<div class="flex overflow-hidden rounded shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+					{#each BLEND_MODES as mode (mode.id)}
+						<button
+							type="button"
+							class="h-7 px-2 text-[10px] font-medium whitespace-nowrap transition
+								{brushSettings.blend === mode.id
+								? 'bg-[#4a4a52] text-white shadow-[inset_0_1px_2px_rgba(0,0,0,0.45)]'
+								: 'bg-[#2a2a2e] text-white/70 hover:bg-[#34343a] hover:text-white/90'}"
+							aria-pressed={brushSettings.blend === mode.id}
+							title={mode.hint}
+							onclick={() => (brushSettings.blend = mode.id)}
 						>
-							<SliderSpacing bind:value={spacing} />
-						</div>
-					{/if}
+							{mode.label}
+						</button>
+					{/each}
 				</div>
+				<button
+					type="button"
+					class={brushSettings.pressureSize ? settingBtnOn : settingBtn}
+					aria-label={brushSettings.pressureSize ? 'Pressure controls size' : 'Fixed size'}
+					aria-pressed={brushSettings.pressureSize}
+					onclick={() => (brushSettings.pressureSize = !brushSettings.pressureSize)}
+				>
+					Size pressure: {brushSettings.pressureSize ? 'On' : 'Off'}
+				</button>
+				<button
+					type="button"
+					class={brushSettings.pressureOpacity ? settingBtnOn : settingBtn}
+					aria-label={brushSettings.pressureOpacity ? 'Pressure controls opacity' : 'Fixed opacity'}
+					aria-pressed={brushSettings.pressureOpacity}
+					onclick={() => (brushSettings.pressureOpacity = !brushSettings.pressureOpacity)}
+				>
+					Opacity pressure: {brushSettings.pressureOpacity ? 'On' : 'Off'}
+				</button>
 			</div>
 		{/if}
 
@@ -336,7 +369,7 @@
 				disabled={!canUndo}
 				aria-label="Undo"
 				title="Undo"
-				onclick={() => historyApi?.undo()}
+				onclick={() => editApi?.undo()}
 			>
 				<svg
 					xmlns="http://www.w3.org/2000/svg"
@@ -355,21 +388,11 @@
 			</button>
 			<button
 				type="button"
-				class={historyOpen ? toolBtnOn : toolBtn}
-				aria-label="History"
-				aria-pressed={historyOpen}
-				title="History and timelapse"
-				onclick={() => (historyOpen = !historyOpen)}
-			>
-				<span class="text-[11px] font-semibold">H</span>
-			</button>
-			<button
-				type="button"
 				class={toolBtn}
 				disabled={!canRedo}
 				aria-label="Redo"
 				title="Redo"
-				onclick={() => historyApi?.redo()}
+				onclick={() => editApi?.redo()}
 			>
 				<svg
 					xmlns="http://www.w3.org/2000/svg"
@@ -462,11 +485,3 @@
 		</button>
 	{/if}
 </div>
-
-{#if historyOpen}
-	<HistoryGraphDialog
-		api={historyApi}
-		state={historyState}
-		onClose={() => (historyOpen = false)}
-	/>
-{/if}
