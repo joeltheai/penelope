@@ -47,6 +47,17 @@
 	let resizeDrag: ResizeDrag | null = $state(null);
 	let resizePanCam: { lastX: number; lastY: number } | null = $state(null);
 
+	const HANDLES: Array<[string, string, string]> = [
+		['nw', '0', '0'],
+		['ne', '100%', '0'],
+		['sw', '0', '100%'],
+		['se', '100%', '100%'],
+		['n', '50%', '0'],
+		['s', '50%', '100%'],
+		['w', '0', '50%'],
+		['e', '100%', '50%']
+	];
+
 	const cropScreen = $derived(
 		cropToScreen(
 			{ x: cropX, y: cropY, w: cropW, h: cropH },
@@ -136,7 +147,7 @@
 </script>
 
 <div
-	class="fixed inset-0 z-40 touch-none"
+	class="surface"
 	role="presentation"
 	aria-label="Resize canvas"
 	onpointerdown={onResizePointerDown}
@@ -146,28 +157,28 @@
 	onwheel={onResizeWheel}
 >
 	<div
-		class="pointer-events-none absolute bg-black/45"
-		style:left="0"
+		class="scrim"
 		style:top="0"
+		style:left="0"
 		style:width="100%"
 		style:height="{Math.max(0, cropScreen.top)}px"
 	></div>
 	<div
-		class="pointer-events-none absolute bg-black/45"
+		class="scrim"
 		style:left="0"
 		style:top="{cropScreen.top + cropScreen.height}px"
 		style:width="100%"
 		style:bottom="0"
 	></div>
 	<div
-		class="pointer-events-none absolute bg-black/45"
+		class="scrim"
 		style:left="0"
 		style:top="{cropScreen.top}px"
 		style:width="{Math.max(0, cropScreen.left)}px"
 		style:height="{cropScreen.height}px"
 	></div>
 	<div
-		class="pointer-events-none absolute bg-black/45"
+		class="scrim"
 		style:left="{cropScreen.left + cropScreen.width}px"
 		style:top="{cropScreen.top}px"
 		style:right="0"
@@ -175,43 +186,130 @@
 	></div>
 
 	<div
-		class="pointer-events-none absolute border border-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
+		class="crop"
 		style:left="{cropScreen.left}px"
 		style:top="{cropScreen.top}px"
 		style:width="{cropScreen.width}px"
 		style:height="{cropScreen.height}px"
 	>
-		{#each [['nw', '0', '0'], ['ne', '100%', '0'], ['sw', '0', '100%'], ['se', '100%', '100%'], ['n', '50%', '0'], ['s', '50%', '100%'], ['w', '0', '50%'], ['e', '100%', '50%']] as [name, l, t] (name)}
-			<div
-				class="absolute size-3 rounded-sm border border-black/40 bg-white"
-				style:left={l}
-				style:top={t}
-				style:translate="-50% -50%"
-			></div>
+		{#each HANDLES as [name, l, t] (name)}
+			<div class="handle" style:left={l} style:top={t}></div>
 		{/each}
 	</div>
 
 	<div
-		class="pointer-events-auto absolute bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-xl bg-[#1e1e22]/95 px-3 py-2 shadow-[0_8px_28px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
+		class="bar"
 		role="toolbar"
 		tabindex="-1"
 		aria-label="Confirm canvas size"
 		onpointerdown={(e) => e.stopPropagation()}
 	>
-		<span class="min-w-[7rem] px-1 text-center text-sm tabular-nums text-white/80">{cropLabel}</span>
-		<button
-			type="button"
-			class="rounded-md bg-[#2a2a2e] px-3 py-1.5 text-sm text-white/75 transition hover:bg-[#34343a] hover:text-white"
-			onclick={onCancel}
-		>
-			Cancel
-		</button>
-		<button
-			type="button"
-			class="rounded-md bg-[#3a3a42] px-3 py-1.5 text-sm text-white transition hover:bg-[#4a4a52]"
-			onclick={onApply}
-		>
+		<span class="readout pl-mono">{cropLabel}</span>
+		<span class="bar-rule" aria-hidden="true"></span>
+		<button type="button" class="btn" title="Cancel (Esc)" onclick={onCancel}>Cancel</button>
+		<button type="button" class="btn btn--primary" title="Apply (Enter)" onclick={onApply}>
 			Apply
 		</button>
 	</div>
 </div>
+
+<style>
+	.surface {
+		position: fixed;
+		inset: 0;
+		z-index: 40;
+		touch-action: none;
+	}
+
+	.scrim {
+		position: absolute;
+		pointer-events: none;
+		background: rgba(19, 18, 21, 0.72);
+	}
+
+	.crop {
+		position: absolute;
+		pointer-events: none;
+		border: 1px solid var(--pl-ink);
+		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+	}
+
+	.handle {
+		position: absolute;
+		width: 10px;
+		height: 10px;
+		translate: -50% -50%;
+		border-radius: 2px;
+		background: var(--pl-ink);
+		box-shadow:
+			0 0 0 1px rgba(0, 0, 0, 0.55),
+			0 1px 3px rgba(0, 0, 0, 0.45);
+	}
+
+	.bar {
+		position: absolute;
+		left: 50%;
+		bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+		translate: -50% 0;
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 4px;
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line-strong);
+		border-radius: var(--pl-radius);
+		box-shadow: var(--pl-shadow), var(--pl-top-highlight);
+		pointer-events: auto;
+	}
+
+	.readout {
+		min-width: 104px;
+		padding: 0 6px;
+		text-align: center;
+		font-size: 12px;
+		color: var(--pl-dim);
+		white-space: nowrap;
+	}
+
+	.bar-rule {
+		width: 1px;
+		height: 24px;
+		background: var(--pl-line);
+		margin: 0 2px;
+	}
+
+	.btn {
+		height: var(--pl-tap);
+		padding: 0 14px;
+		border-radius: 4px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--pl-dim);
+		transition: transform 130ms var(--pl-ease);
+	}
+
+	.btn:active {
+		transform: scale(0.97);
+	}
+
+	@media (hover: hover) {
+		.btn:hover {
+			background: var(--pl-hover);
+			color: var(--pl-ink);
+		}
+	}
+
+	.btn--primary {
+		background: var(--pl-accent);
+		color: #14131a;
+	}
+
+	@media (hover: hover) {
+		.btn--primary:hover {
+			background: var(--pl-accent);
+			color: #14131a;
+		}
+	}
+</style>
