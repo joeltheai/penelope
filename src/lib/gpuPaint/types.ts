@@ -26,6 +26,20 @@ export type BrushSettings = {
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
+export type RasterPatch = {
+	bounds: Rect;
+	before: Uint8Array;
+	after: Uint8Array;
+};
+
+export type RasterHistoryEntry = RasterPatch[];
+
+export type GpuPaintOptions = {
+	width?: number;
+	height?: number;
+	pixels?: Uint8Array;
+};
+
 export type LassoMode = 'fill' | 'pull';
 
 export type LassoOptions = {
@@ -51,13 +65,10 @@ export type GpuPaint = {
 	setLassoOptions: (opts: Partial<LassoOptions>) => void;
 	setBrushSettings: (settings: Partial<BrushSettings>) => void;
 	beginStroke: () => void;
-	endStroke: (opacity: number) => void;
+	endStroke: (opacity: number) => Promise<RasterHistoryEntry | null>;
 	cancelStroke: () => void;
-	undo: () => boolean;
-	redo: () => boolean;
-	canUndo: () => boolean;
-	canRedo: () => boolean;
-	clearUndo: () => void;
+	applyRasterPatch: (bounds: Rect, pixels: Uint8Array) => void;
+	readRegion: (bounds: Rect) => Promise<Uint8Array | null>;
 	addSample: (
 		x: number,
 		y: number,

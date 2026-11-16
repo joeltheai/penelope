@@ -18,8 +18,11 @@ export type {
 	BrushSettings,
 	EditApi,
 	GpuPaint,
+	GpuPaintOptions,
 	LassoMode,
 	LassoOptions,
+	RasterHistoryEntry,
+	RasterPatch,
 	Rect,
 	ToolKind,
 	ViewState
