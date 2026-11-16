@@ -23,11 +23,11 @@
 
 	let trackEl: HTMLElement | undefined = $state();
 
-	let percent = $derived(((value - min) / (max - min)) * 100);
+	let percent = $derived(max > min ? clamp(((value - min) / (max - min)) * 100, 0, 100) : 0);
 
 	function snap(n: number) {
 		const snapped = Math.round((n - min) / step) * step + min;
-		const decimals = String(step).includes('.') ? String(step).split('.')[1].length : 0;
+		const decimals = String(step).includes('.') ? String(step).split('.')[1]!.length : 0;
 		return Number(clamp(snapped, min, max).toFixed(decimals));
 	}
 
@@ -94,58 +94,107 @@
 	}
 </script>
 
-<div
-	bind:this={trackEl}
-	role="slider"
-	tabindex="0"
-	aria-label={label}
-	aria-valuemin={min}
-	aria-valuemax={max}
-	aria-valuenow={value}
-	class="track outline-none focus-visible:ring-2 focus-visible:ring-white/35"
-	style:background={gradient}
-	onpointerdown={onPointerDown}
-	onpointermove={onPointerMove}
-	onpointerup={onPointerUp}
-	onpointercancel={onPointerUp}
-	onkeydown={onKeyDown}
->
+<div class="field">
+	<span class="head">
+		<span class="label">{label}</span>
+		<span class="value pl-mono" aria-hidden="true">{Math.round(value)}</span>
+	</span>
 	<div
-		class="thumb"
-		style:left="{percent}%"
-		style:background={thumbColor ?? '#fff'}
-		aria-hidden="true"
-	></div>
+		bind:this={trackEl}
+		role="slider"
+		tabindex="0"
+		aria-label={label}
+		aria-valuemin={min}
+		aria-valuemax={max}
+		aria-valuenow={value}
+		class="track"
+		onpointerdown={onPointerDown}
+		onpointermove={onPointerMove}
+		onpointerup={onPointerUp}
+		onpointercancel={onPointerUp}
+		onkeydown={onKeyDown}
+	>
+		<span class="rail" style:background={gradient} aria-hidden="true"></span>
+		<span
+			class="thumb"
+			style:left="{percent}%"
+			style:background={thumbColor ?? '#fff'}
+			aria-hidden="true"
+		></span>
+	</div>
 </div>
 
 <style>
+	.field {
+		display: flex;
+		flex-direction: column;
+		width: 100%;
+		min-width: 0;
+	}
+
+	.head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 8px;
+		margin-bottom: -3px;
+	}
+
+	.label {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--pl-dim);
+	}
+
+	.value {
+		font-size: 10.5px;
+		color: var(--pl-ink);
+		flex: none;
+	}
+
 	.track {
 		position: relative;
-		height: 1.35rem;
-		border-radius: 9999px;
+		display: flex;
+		align-items: center;
+		height: var(--pl-tap);
 		cursor: grab;
 		touch-action: none;
 		user-select: none;
-		box-shadow:
-			inset 0 0 0 1px rgba(0, 0, 0, 0.35),
-			inset 0 1px 2px rgba(0, 0, 0, 0.25);
+		border-radius: 4px;
 	}
 
 	.track:active {
 		cursor: grabbing;
 	}
 
+	.track:focus-visible {
+		outline: 2px solid var(--pl-accent);
+		outline-offset: -2px;
+	}
+
+	.rail {
+		display: block;
+		width: 100%;
+		height: 16px;
+		border-radius: 3px;
+		box-shadow:
+			inset 0 0 0 1px rgba(0, 0, 0, 0.5),
+			inset 0 1px 2px rgba(0, 0, 0, 0.3);
+	}
+
 	.thumb {
 		position: absolute;
 		top: 50%;
-		width: 1.2rem;
-		height: 1.2rem;
+		width: 14px;
+		height: 14px;
 		translate: -50% -50%;
-		border-radius: 9999px;
-		border: 2.5px solid #fff;
+		border-radius: 50%;
+		border: 2px solid var(--pl-ink);
 		box-shadow:
-			0 1px 3px rgba(0, 0, 0, 0.45),
-			0 0 0 1px rgba(0, 0, 0, 0.12);
+			0 1px 3px rgba(0, 0, 0, 0.5),
+			0 0 0 1px rgba(0, 0, 0, 0.3);
 		pointer-events: none;
 	}
 </style>
