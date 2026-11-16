@@ -1,5 +1,7 @@
 <script lang="ts">
 	import ColorTrackSlider from '$lib/ColorTrackSlider.svelte';
+	import Icon from '$lib/ui/Icon.svelte';
+	import Segmented from '$lib/ui/Segmented.svelte';
 	import {
 		hueGradientCss,
 		hsvToRgb,
@@ -25,10 +27,18 @@
 		picking?: boolean;
 	} = $props();
 
+	const MODES = [
+		{ value: 'rgb', label: 'RGB' },
+		{ value: 'hsv', label: 'HSV' }
+	];
+
 	let mode = $state<Mode>('rgb');
 
 	let rgb = $state<RGB>({ r: 26, g: 108, b: 255 });
 	let hsv = $state<HSV>({ h: 217, s: 0.9, v: 1 });
+
+	let editingHex = $state(false);
+	let hexDraft = $state('#1A6CFF');
 
 	function commitRgb(next: RGB) {
 		const rounded: RGB = {
@@ -67,6 +77,11 @@
 		hsv = rgbToHsv(parsed);
 	});
 
+	$effect(() => {
+		const next = rgbToHex(rgb).toUpperCase();
+		if (!editingHex) hexDraft = next;
+	});
+
 	let thumb = $derived(rgbToHex(rgb));
 	let redGrad = $derived(rgbChannelGradient('r', rgb));
 	let greenGrad = $derived(rgbChannelGradient('g', rgb));
@@ -79,13 +94,33 @@
 	let sPct = $derived(Math.round(hsv.s * 100));
 	let vPct = $derived(Math.round(hsv.v * 100));
 
-	function minimize() {
-		open = false;
-		picking = false;
+	function onHexInput(event: Event) {
+		editingHex = true;
+		hexDraft = (event.currentTarget as HTMLInputElement).value;
 	}
 
-	function expand() {
-		open = true;
+	function onHexCommit() {
+		const accepted = commitHex(hexDraft);
+		editingHex = false;
+		hexDraft = (accepted ? rgbToHex(rgb) : color).toUpperCase();
+	}
+
+	function onHexKeyDown(event: KeyboardEvent) {
+		if (event.key === 'Enter') {
+			event.preventDefault();
+			onHexCommit();
+			(event.currentTarget as HTMLInputElement).blur();
+		} else if (event.key === 'Escape') {
+			event.stopPropagation();
+			editingHex = false;
+			hexDraft = color.toUpperCase();
+			(event.currentTarget as HTMLInputElement).blur();
+		}
+	}
+
+	function close() {
+		open = false;
+		picking = false;
 	}
 
 	async function toggleEyedropper() {
@@ -99,294 +134,217 @@
 				const result = await new window.EyeDropper().open();
 				commitHex(result.sRGBHex);
 			} catch {
+				// The native picker was dismissed without a sample.
 			}
 			return;
 		}
 
 		picking = true;
 	}
-
-	const POS_KEY = 'penelope.colorPicker';
-	let posX = $state(0);
-	let posY = $state(16);
-	let posReady = $state(false);
-	let dragging = $state(false);
-	let rootEl: HTMLElement | undefined = $state();
-
-	$effect(() => {
-		if (!('window' in globalThis)) return;
-		try {
-			const raw = localStorage.getItem(POS_KEY);
-			if (raw) {
-				const saved = JSON.parse(raw) as { x: number; y: number };
-				posX = saved.x;
-				posY = saved.y;
-			} else {
-				posX = Math.max(12, window.innerWidth - 280);
-				posY = 16;
-			}
-		} catch {
-			posX = Math.max(12, window.innerWidth - 280);
-			posY = 16;
-		}
-		posReady = true;
-	});
-
-	function clampPos(x: number, y: number) {
-		const w = rootEl?.offsetWidth ?? 256;
-		const h = rootEl?.offsetHeight ?? 200;
-		const maxX = Math.max(0, window.innerWidth - w);
-		const maxY = Math.max(0, window.innerHeight - h);
-		return {
-			x: Math.min(maxX, Math.max(0, x)),
-			y: Math.min(maxY, Math.max(0, y))
-		};
-	}
-
-	function savePos() {
-		try {
-			localStorage.setItem(POS_KEY, JSON.stringify({ x: posX, y: posY }));
-		} catch {
-		}
-	}
-
-	function onDragStart(e: PointerEvent) {
-		if (e.button !== 0) return;
-		const handle = e.currentTarget as HTMLElement;
-		const startX = e.clientX;
-		const startY = e.clientY;
-		const origX = posX;
-		const origY = posY;
-		dragging = true;
-		handle.setPointerCapture(e.pointerId);
-
-		function onMove(ev: PointerEvent) {
-			const next = clampPos(origX + (ev.clientX - startX), origY + (ev.clientY - startY));
-			posX = next.x;
-			posY = next.y;
-		}
-
-		function onUp(ev: PointerEvent) {
-			dragging = false;
-			handle.releasePointerCapture(ev.pointerId);
-			handle.removeEventListener('pointermove', onMove);
-			handle.removeEventListener('pointerup', onUp);
-			handle.removeEventListener('pointercancel', onUp);
-			const next = clampPos(posX, posY);
-			posX = next.x;
-			posY = next.y;
-			savePos();
-		}
-
-		handle.addEventListener('pointermove', onMove);
-		handle.addEventListener('pointerup', onUp);
-		handle.addEventListener('pointercancel', onUp);
-	}
 </script>
 
-{#if posReady}
-	<div
-		bind:this={rootEl}
-		class="fixed z-10 flex flex-col gap-1.5"
-		style:left="{posX}px"
-		style:top="{posY}px"
-		data-color-picker
-	>
+<div class="picker" role="dialog" aria-label="Color picker">
+	<div class="head">
+		<span class="chip" style:background={color} aria-hidden="true"></span>
+		<input
+			class="hex pl-mono"
+			type="text"
+			value={hexDraft}
+			maxlength="7"
+			spellcheck="false"
+			autocomplete="off"
+			autocapitalize="characters"
+			aria-label="Hex color"
+			oninput={onHexInput}
+			onchange={onHexCommit}
+			onblur={onHexCommit}
+			onkeydown={onHexKeyDown}
+		/>
 		<button
 			type="button"
-			class="flex h-5 w-full cursor-grab items-center justify-center rounded-md bg-[#2a2a2e] text-white/35 touch-none active:cursor-grabbing
-				{dragging ? 'cursor-grabbing bg-[#34343a]' : ''}"
-			aria-label="Move color picker"
-			title="Drag to move"
-			onpointerdown={onDragStart}
+			class="icon-btn"
+			class:icon-btn--on={picking}
+			aria-label="Eyedropper"
+			aria-pressed={picking}
+			title={picking ? 'Tap the canvas to sample · Esc cancels' : 'Eyedropper (E)'}
+			onclick={toggleEyedropper}
 		>
-			<svg
-				xmlns="http://www.w3.org/2000/svg"
-				viewBox="0 0 24 24"
-				fill="currentColor"
-				class="size-3.5"
-				aria-hidden="true"
-			>
-				<circle cx="8" cy="8" r="1.5" />
-				<circle cx="16" cy="8" r="1.5" />
-				<circle cx="8" cy="16" r="1.5" />
-				<circle cx="16" cy="16" r="1.5" />
-			</svg>
+			<Icon name="eyedropper" size={18} />
 		</button>
-
-		{#if open}
-			<div
-				class="w-[16rem] rounded-xl bg-[#1e1e22] p-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06)]"
-				role="group"
-				aria-label="Color picker"
-			>
-				<div class="mb-2 flex items-center gap-1.5">
-					<div
-						class="size-7 shrink-0 rounded-full border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]"
-						style:background={color}
-						aria-hidden="true"
-					></div>
-
-					<div
-						class="flex min-w-0 flex-1 rounded-lg bg-[#141416] p-0.5"
-						role="tablist"
-						aria-label="Color model"
-					>
-						<button
-							type="button"
-							role="tab"
-							aria-selected={mode === 'rgb'}
-							class="flex-1 rounded-md px-2 py-1 text-xs font-medium transition
-								{mode === 'rgb'
-								? 'bg-[#3a3a42] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
-								: 'text-white/50 hover:text-white/75'}"
-							onclick={() => (mode = 'rgb')}
-						>
-							RGB
-						</button>
-						<button
-							type="button"
-							role="tab"
-							aria-selected={mode === 'hsv'}
-							class="flex-1 rounded-md px-2 py-1 text-xs font-medium transition
-								{mode === 'hsv'
-								? 'bg-[#3a3a42] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
-								: 'text-white/50 hover:text-white/75'}"
-							onclick={() => (mode = 'hsv')}
-						>
-							HSV
-						</button>
-					</div>
-
-					<button
-						type="button"
-						class="flex size-7 shrink-0 items-center justify-center rounded-md transition
-							{picking
-							? 'bg-[#3a3a42] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
-							: 'text-white/45 hover:bg-white/5 hover:text-white/80'}"
-						aria-label="Eyedropper"
-						aria-pressed={picking}
-						title={picking ? 'Drag to sample · Esc to cancel' : 'Eyedropper'}
-						onclick={toggleEyedropper}
-					>
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="size-3.5"
-							aria-hidden="true"
-						>
-							<path d="m2 22 1-1h3l9-9" />
-							<path d="M3 21v-3l9-9" />
-							<path d="m15 5 3 3" />
-							<path d="M14.5 4.5c1.5-1.5 4-1.5 5.5 0s1.5 4 0 5.5L16 14l-3-3z" />
-						</svg>
-					</button>
-
-					<button
-						type="button"
-						class="flex size-7 shrink-0 items-center justify-center rounded-md text-white/45 transition hover:bg-white/5 hover:text-white/80"
-						aria-label="Minimize color picker"
-						title="Minimize"
-						onclick={minimize}
-					>
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="size-3.5"
-							aria-hidden="true"
-						>
-							<path d="M5 12h14" />
-						</svg>
-					</button>
-				</div>
-
-				{#if mode === 'rgb'}
-					<div class="flex flex-col gap-1.5">
-						<ColorTrackSlider
-							label="Red"
-							min={0}
-							max={255}
-							step={1}
-							value={rgb.r}
-							gradient={redGrad}
-							thumbColor={thumb}
-							onValue={(n) => commitRgb({ ...rgb, r: n })}
-						/>
-						<ColorTrackSlider
-							label="Green"
-							min={0}
-							max={255}
-							step={1}
-							value={rgb.g}
-							gradient={greenGrad}
-							thumbColor={thumb}
-							onValue={(n) => commitRgb({ ...rgb, g: n })}
-						/>
-						<ColorTrackSlider
-							label="Blue"
-							min={0}
-							max={255}
-							step={1}
-							value={rgb.b}
-							gradient={blueGrad}
-							thumbColor={thumb}
-							onValue={(n) => commitRgb({ ...rgb, b: n })}
-						/>
-					</div>
-				{:else}
-					<div class="flex flex-col gap-1.5">
-						<ColorTrackSlider
-							label="Hue"
-							min={0}
-							max={360}
-							step={1}
-							value={h}
-							gradient={hueGrad}
-							thumbColor={thumb}
-							onValue={(n) => commitHsv({ ...hsv, h: n })}
-						/>
-						<ColorTrackSlider
-							label="Saturation"
-							min={0}
-							max={100}
-							step={1}
-							value={sPct}
-							gradient={satGrad}
-							thumbColor={thumb}
-							onValue={(n) => commitHsv({ ...hsv, s: n / 100 })}
-						/>
-						<ColorTrackSlider
-							label="Brightness"
-							min={0}
-							max={100}
-							step={1}
-							value={vPct}
-							gradient={valGrad}
-							thumbColor={thumb}
-							onValue={(n) => commitHsv({ ...hsv, v: n / 100 })}
-						/>
-					</div>
-				{/if}
-			</div>
-		{:else}
-			<button
-				type="button"
-				class="h-10 w-10 cursor-pointer self-end rounded-full border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_1px_3px_rgba(0,0,0,0.4)] outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-				style:background={color}
-				aria-label="Expand color picker"
-				title="Color"
-				onclick={expand}
-			></button>
-		{/if}
+		<button
+			type="button"
+			class="icon-btn"
+			aria-label="Close color picker"
+			title="Close"
+			onclick={close}
+		>
+			<Icon name="close" size={16} />
+		</button>
 	</div>
-{/if}
+
+	<div class="model">
+		<Segmented
+			label="Color model"
+			options={MODES}
+			value={mode}
+			onchange={(next) => (mode = next as Mode)}
+		/>
+	</div>
+
+	{#if mode === 'rgb'}
+		<div class="tracks">
+			<ColorTrackSlider
+				label="Red"
+				min={0}
+				max={255}
+				step={1}
+				value={rgb.r}
+				gradient={redGrad}
+				thumbColor={thumb}
+				onValue={(n) => commitRgb({ ...rgb, r: n })}
+			/>
+			<ColorTrackSlider
+				label="Green"
+				min={0}
+				max={255}
+				step={1}
+				value={rgb.g}
+				gradient={greenGrad}
+				thumbColor={thumb}
+				onValue={(n) => commitRgb({ ...rgb, g: n })}
+			/>
+			<ColorTrackSlider
+				label="Blue"
+				min={0}
+				max={255}
+				step={1}
+				value={rgb.b}
+				gradient={blueGrad}
+				thumbColor={thumb}
+				onValue={(n) => commitRgb({ ...rgb, b: n })}
+			/>
+		</div>
+	{:else}
+		<div class="tracks">
+			<ColorTrackSlider
+				label="Hue"
+				min={0}
+				max={360}
+				step={1}
+				value={h}
+				gradient={hueGrad}
+				thumbColor={thumb}
+				onValue={(n) => commitHsv({ ...hsv, h: n })}
+			/>
+			<ColorTrackSlider
+				label="Saturation"
+				min={0}
+				max={100}
+				step={1}
+				value={sPct}
+				gradient={satGrad}
+				thumbColor={thumb}
+				onValue={(n) => commitHsv({ ...hsv, s: n / 100 })}
+			/>
+			<ColorTrackSlider
+				label="Brightness"
+				min={0}
+				max={100}
+				step={1}
+				value={vPct}
+				gradient={valGrad}
+				thumbColor={thumb}
+				onValue={(n) => commitHsv({ ...hsv, v: n / 100 })}
+			/>
+		</div>
+	{/if}
+</div>
+
+<style>
+	.picker {
+		width: 252px;
+		max-height: min(60vh, 380px);
+		padding: 10px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		touch-action: pan-y;
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line-strong);
+		border-radius: var(--pl-radius);
+		box-shadow: var(--pl-shadow), var(--pl-top-highlight);
+	}
+
+	.head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.chip {
+		width: 30px;
+		height: 30px;
+		flex: none;
+		border-radius: 4px;
+		border: 1px solid var(--pl-line-strong);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+	}
+
+	.hex {
+		flex: 1;
+		min-width: 0;
+		height: var(--pl-tap);
+		padding: 0 8px;
+		font-size: 11px;
+		letter-spacing: 0.05em;
+		color: var(--pl-ink);
+		background: var(--pl-bg);
+		border: 1px solid var(--pl-line);
+		border-radius: 4px;
+		text-transform: uppercase;
+		-webkit-user-select: text;
+		user-select: text;
+	}
+
+	.hex:focus {
+		border-color: var(--pl-line-strong);
+	}
+
+	.icon-btn {
+		display: grid;
+		place-items: center;
+		width: var(--pl-tap);
+		height: var(--pl-tap);
+		flex: none;
+		border-radius: 4px;
+		color: var(--pl-dim);
+		transition: transform 130ms var(--pl-ease);
+	}
+
+	.icon-btn:active {
+		transform: scale(0.94);
+	}
+
+	@media (hover: hover) {
+		.icon-btn:hover {
+			background: var(--pl-hover);
+			color: var(--pl-ink);
+		}
+	}
+
+	.icon-btn--on {
+		background: var(--pl-accent-soft);
+		color: var(--pl-accent);
+	}
+
+	.model {
+		padding-bottom: 4px;
+	}
+
+	.tracks {
+		display: flex;
+		flex-direction: column;
+	}
+</style>
