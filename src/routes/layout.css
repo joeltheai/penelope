@@ -1,7 +1,35 @@
 @import 'tailwindcss';
 
-html,
-body {
+:root {
+	--pl-bg: #131215;
+	--pl-panel: #1a191d;
+	--pl-raised: #211f25;
+	--pl-hover: #29272e;
+	--pl-line: rgba(255, 255, 255, 0.08);
+	--pl-line-strong: rgba(255, 255, 255, 0.16);
+	--pl-ink: #ece8e1;
+	--pl-dim: #a8a29a;
+	--pl-faint: #6f6a63;
+	--pl-accent: #9db6ff;
+	--pl-accent-soft: rgba(157, 182, 255, 0.14);
+	--pl-danger: #ff8a76;
+	--pl-radius: 6px;
+	--pl-tap: 44px;
+	--pl-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+	--pl-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+	--pl-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+	--pl-topbar: 44px;
+	--pl-rail: 52px;
+	--pl-settings: 248px;
+	--pl-transport: 52px;
+	--pl-gutter: 12px;
+	--pl-top-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+	color-scheme: dark;
+}
+
+html {
 	height: 100%;
 	overflow: hidden;
 	overscroll-behavior: none;
@@ -10,4 +38,91 @@ body {
 	user-select: none;
 	-webkit-touch-callout: none;
 	-webkit-tap-highlight-color: transparent;
+}
+
+body {
+	height: 100%;
+	height: 100dvh;
+	overflow: hidden;
+	overscroll-behavior: none;
+	touch-action: manipulation;
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+	-webkit-tap-highlight-color: transparent;
+	background: var(--pl-bg);
+	color: var(--pl-ink);
+	font-family:
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		sans-serif;
+	font-size: 13px;
+	line-height: 1.4;
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+	color: inherit;
+}
+
+button {
+	cursor: pointer;
+}
+
+button:disabled {
+	cursor: default;
+}
+
+svg {
+	display: block;
+}
+
+::selection {
+	background: var(--pl-accent-soft);
+	color: var(--pl-ink);
+}
+
+/* Monospace readouts and tracked micro-labels are used across every panel. */
+.pl-mono {
+	font-family: var(--pl-mono);
+	font-variant-numeric: tabular-nums;
+}
+
+.pl-caps {
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.pl-sr {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+:where(button, [role='button'], input, select, textarea, [tabindex]):focus-visible {
+	outline: 2px solid var(--pl-accent);
+	outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.001ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.001ms !important;
+		scroll-behavior: auto !important;
+	}
 }
