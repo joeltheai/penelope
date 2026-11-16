@@ -2,11 +2,17 @@
 	import PaintCanvas from '$lib/PaintCanvas.svelte';
 	import ColorPicker from '$lib/ColorPicker.svelte';
 	import Slider from '$lib/Slider.svelte';
+	import TimelineSheet from '$lib/TimelineSheet.svelte';
+	import Icon from '$lib/ui/Icon.svelte';
+	import Segmented from '$lib/ui/Segmented.svelte';
+	import Switch from '$lib/ui/Switch.svelte';
+	import ToolButton from '$lib/ui/ToolButton.svelte';
+	import type { IconName } from '$lib/ui/icons';
 	import {
 		AIRBRUSH_PRESET,
 		DEFAULT_BRUSH_SETTINGS,
-		DEFAULT_DOC_W,
 		DEFAULT_DOC_H,
+		DEFAULT_DOC_W,
 		PEN_PRESET,
 		type BrushBlend,
 		type BrushSettings,
@@ -15,35 +21,37 @@
 		type LassoOptions,
 		type ToolKind
 	} from '$lib/gpuPaint';
+	import { EMPTY_HISTORY_STATE, type HistoryApi, type HistoryUiState } from '$lib/historyStore';
 
-	const TOOLS: { id: ToolKind; label: string }[] = [
-		{ id: 'pen', label: 'Pen' },
-		{ id: 'airbrush', label: 'Airbrush' },
-		{ id: 'lasso', label: 'Lasso' },
-		{ id: 'fan', label: 'Fan' },
-		{ id: 'fanFade', label: 'Fan Fade' }
+	type ToolEntry = { id: ToolKind; label: string; icon: IconName; key: string };
+
+	const TOOLS: ToolEntry[] = [
+		{ id: 'pen', label: 'Pen', icon: 'pen', key: 'P' },
+		{ id: 'airbrush', label: 'Airbrush', icon: 'airbrush', key: 'A' },
+		{ id: 'lasso', label: 'Lasso', icon: 'lasso', key: 'L' },
+		{ id: 'fan', label: 'Fan', icon: 'fan', key: 'F' },
+		{ id: 'fanFade', label: 'Fan Fade', icon: 'fanFade', key: 'G' }
 	];
 
-	const LASSO_MODES: { id: LassoMode; label: string }[] = [
-		{ id: 'fill', label: 'Fill' },
-		{ id: 'pull', label: 'Pull-Shape' }
+	const BLEND_OPTIONS: { value: BrushBlend; label: string; hint: string }[] = [
+		{ value: 'wash', label: 'Wash', hint: 'Uniform coverage — opacity builds to the brush opacity' },
+		{ value: 'buildup', label: 'Build', hint: 'Paint accumulates with each dab (airbrush)' }
 	];
 
-	const BLEND_MODES: { id: BrushBlend; label: string; hint: string }[] = [
-		{ id: 'wash', label: 'Wash', hint: 'Uniform coverage — opacity builds to the brush opacity' },
-		{ id: 'buildup', label: 'Build', hint: 'Paint accumulates with each dab (airbrush)' }
+	const LASSO_MODE_OPTIONS: { value: LassoMode; label: string; hint: string }[] = [
+		{ value: 'fill', label: 'Fill', hint: 'Fill the enclosed shape with the active color' },
+		{ value: 'pull', label: 'Pull-Shape', hint: 'Pull the enclosed shape out of the canvas' }
 	];
 
-	const pan = (v: number) => `${Math.round(v * 100)}%`;
-	const sizeLabel = (v: number) => `${Math.round(v * 2)} px`;
+	const pct = (v: number) => `${Math.round(v * 100)}%`;
+	const pxSize = (v: number) => `${Math.round(v * 2)} px`;
+
+	const UI_KEY = 'penelope.ui';
 
 	let color = $state('#1a6cff');
 	let brushSettings = $state<BrushSettings>({ ...DEFAULT_BRUSH_SETTINGS });
 	let brush = $state<ToolKind>('pen');
-	let lassoOptions = $state<LassoOptions>({
-		mode: 'fill',
-		splat: false
-	});
+	let lassoOptions = $state<LassoOptions>({ mode: 'fill', splat: false });
 	let canUndo = $state(false);
 	let canRedo = $state(false);
 	let editApi = $state<EditApi | null>(null);
@@ -54,81 +62,84 @@
 	let resizeMode = $state(false);
 	let mirrorView = $state(false);
 
-	const PANEL_KEY = 'penelope.brushPanel';
-	let panelX = $state(12);
-	let panelY = $state(0);
-	let panelReady = $state(false);
-	let draggingPanel = $state(false);
-	let panelEl: HTMLElement | undefined = $state();
+	let historyApi = $state<HistoryApi | null>(null);
+	let historyState = $state<HistoryUiState>({ ...EMPTY_HISTORY_STATE, branches: [] });
+
+	let timelineOpen = $state(false);
+	let colorOpen = $state(false);
+	let settingsOpen = $state(true);
+	let dockEl: HTMLElement | undefined = $state();
+
+	let prefsLoaded = false;
 
 	let isBrush = $derived(brush === 'pen' || brush === 'airbrush');
+	let isLasso = $derived(brush === 'lasso');
+	let toolLabel = $derived(TOOLS.find((tool) => tool.id === brush)?.label ?? 'Pen');
+	let docLabel = $derived(`${docW} × ${docH}`);
+	let zoomPct = $derived(Math.round(zoom * 100));
+
+	let historyBadge = $derived(
+		historyState.exportProgress !== null
+			? `${Math.round(historyState.exportProgress * 100)}%`
+			: historyState.ready
+				? String(historyState.total)
+				: ''
+	);
+
+	let historyStatus = $derived(
+		historyState.exportProgress !== null
+			? `Exporting ${Math.round(historyState.exportProgress * 100)}%`
+			: historyState.busy
+				? 'Working'
+				: historyState.ready
+					? `${historyState.total} steps`
+					: 'Not ready'
+	);
+
+	let historyAnnouncement = $derived(
+		historyState.exportProgress !== null
+			? `Exporting history ${Math.round(historyState.exportProgress * 100)} percent`
+			: historyState.busy
+				? 'History is working'
+				: ''
+	);
 
 	$effect(() => {
+		if (prefsLoaded) return;
+		let stored: boolean | null = null;
 		try {
-			const raw = localStorage.getItem(PANEL_KEY);
+			const raw = localStorage.getItem(UI_KEY);
 			if (raw) {
-				const saved = JSON.parse(raw) as { x: number; y: number };
-				panelX = saved.x;
-				panelY = saved.y;
-			} else {
-				panelY = Math.round(window.innerHeight / 2 - 210);
+				const saved = JSON.parse(raw) as { settingsOpen?: unknown };
+				if (typeof saved.settingsOpen === 'boolean') stored = saved.settingsOpen;
 			}
 		} catch {
-			panelY = Math.round(window.innerHeight / 2 - 210);
+			stored = null;
 		}
-		panelReady = true;
+		settingsOpen = stored ?? window.innerWidth > 900;
+		prefsLoaded = true;
 	});
 
-	function clampPanel(x: number, y: number) {
-		const w = panelEl?.offsetWidth ?? 200;
-		const h = panelEl?.offsetHeight ?? 320;
-		const maxX = Math.max(0, window.innerWidth - w);
-		const maxY = Math.max(0, window.innerHeight - h);
-		return {
-			x: Math.min(maxX, Math.max(0, x)),
-			y: Math.min(maxY, Math.max(0, y))
-		};
-	}
-
-	function savePanel() {
+	$effect(() => {
+		const open = settingsOpen;
+		if (!prefsLoaded) return;
 		try {
-			localStorage.setItem(PANEL_KEY, JSON.stringify({ x: panelX, y: panelY }));
+			localStorage.setItem(UI_KEY, JSON.stringify({ settingsOpen: open }));
 		} catch {
+			// Storage is best-effort: the shell still works without it.
 		}
-	}
+	});
 
-	function onPanelDragStart(e: PointerEvent) {
-		if (e.button !== 0) return;
-		const handle = e.currentTarget as HTMLElement;
-		const startX = e.clientX;
-		const startY = e.clientY;
-		const origX = panelX;
-		const origY = panelY;
-		draggingPanel = true;
-		handle.setPointerCapture(e.pointerId);
-
-		function onMove(ev: PointerEvent) {
-			const next = clampPanel(origX + (ev.clientX - startX), origY + (ev.clientY - startY));
-			panelX = next.x;
-			panelY = next.y;
+	$effect(() => {
+		if (!colorOpen) return;
+		function onPointerDownElsewhere(event: PointerEvent) {
+			const target = event.target;
+			if (dockEl && target instanceof Node && dockEl.contains(target)) return;
+			colorOpen = false;
 		}
-
-		function onUp(ev: PointerEvent) {
-			draggingPanel = false;
-			handle.releasePointerCapture(ev.pointerId);
-			handle.removeEventListener('pointermove', onMove);
-			handle.removeEventListener('pointerup', onUp);
-			handle.removeEventListener('pointercancel', onUp);
-			const next = clampPanel(panelX, panelY);
-			panelX = next.x;
-			panelY = next.y;
-			savePanel();
-		}
-
-		handle.addEventListener('pointermove', onMove);
-		handle.addEventListener('pointerup', onUp);
-		handle.addEventListener('pointercancel', onUp);
-	}
+		window.addEventListener('pointerdown', onPointerDownElsewhere, true);
+		return () => window.removeEventListener('pointerdown', onPointerDownElsewhere, true);
+	});
 
 	function selectBrush(id: ToolKind) {
 		brush = id;
@@ -136,28 +147,70 @@
 		else if (id === 'airbrush') brushSettings = { ...brushSettings, ...AIRBRUSH_PRESET };
 	}
 
-	function onBrushChange(event: Event) {
-		selectBrush((event.currentTarget as HTMLSelectElement).value as ToolKind);
-	}
-
 	function toggleResizeMode() {
 		resizeMode = !resizeMode;
-		if (resizeMode) eyedropper = false;
+		if (resizeMode) {
+			eyedropper = false;
+			colorOpen = false;
+			timelineOpen = false;
+		}
 	}
 
-	const toolBtn =
-		'flex size-9 items-center justify-center rounded-md bg-[#2a2a2e] text-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.35)] transition hover:bg-[#34343a] hover:text-white/90 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-[#2a2a2e] disabled:hover:text-white/70';
-	const toolBtnOn =
-		'flex size-9 items-center justify-center rounded-md bg-[#4a4a52] text-white shadow-[inset_0_1px_2px_rgba(0,0,0,0.45),0_1px_0_rgba(255,255,255,0.06)]';
-	const settingBtn =
-		'flex h-7 items-center justify-center rounded bg-[#2a2a2e] px-2 text-[10px] font-medium whitespace-nowrap text-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.35)] transition hover:bg-[#34343a] hover:text-white/90';
-	const settingBtnOn =
-		'flex h-7 items-center justify-center rounded bg-[#4a4a52] px-2 text-[10px] font-medium whitespace-nowrap text-white shadow-[inset_0_1px_2px_rgba(0,0,0,0.45),0_1px_0_rgba(255,255,255,0.06)]';
-	const toolSelect =
-		'h-7 min-w-28 rounded border border-white/10 bg-[#2a2a2e] px-2 text-[11px] font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.35)] outline-none focus:border-white/30';
-	const panelBox =
-		'w-[184px] rounded-lg bg-[#1e1e22] p-2 shadow-[0_8px_24px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]';
+	function toggleTimeline() {
+		timelineOpen = !timelineOpen;
+		if (timelineOpen) colorOpen = false;
+	}
+
+	function isEditableTarget(target: EventTarget | null) {
+		if (!(target instanceof HTMLElement)) return false;
+		const tag = target.tagName;
+		return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+	}
+
+	function onWindowKeyDown(e: KeyboardEvent) {
+		if (e.metaKey || e.ctrlKey || e.altKey) return;
+		if (isEditableTarget(e.target)) return;
+		if (resizeMode) return;
+		if (timelineOpen && e.code !== 'KeyH' && e.code !== 'Escape') return;
+
+		switch (e.code) {
+			case 'KeyH':
+				e.preventDefault();
+				toggleTimeline();
+				break;
+			case 'KeyE':
+				eyedropper = !eyedropper;
+				break;
+			case 'KeyP':
+				selectBrush('pen');
+				break;
+			case 'KeyA':
+				selectBrush('airbrush');
+				break;
+			case 'KeyL':
+				selectBrush('lasso');
+				break;
+			case 'KeyF':
+				selectBrush('fan');
+				break;
+			case 'KeyG':
+				selectBrush('fanFade');
+				break;
+			case 'Escape':
+				if (timelineOpen) {
+					e.preventDefault();
+					timelineOpen = false;
+				} else if (colorOpen) {
+					colorOpen = false;
+				}
+				break;
+			default:
+				break;
+		}
+	}
 </script>
+
+<svelte:window onkeydown={onWindowKeyDown} />
 
 <PaintCanvas
 	bind:color
@@ -173,315 +226,918 @@
 	bind:eyedropper
 	bind:resizeMode
 	bind:mirrorView
+	bind:historyApi
+	bind:historyState
+	suspended={timelineOpen}
 />
 
 {#if !resizeMode}
-	<ColorPicker bind:color bind:picking={eyedropper} />
+	<header class="topbar">
+		<div class="topbar-inner">
+			<div class="brand">
+				<span class="brand-dot" aria-hidden="true"></span>
+				<span class="brand-name">PENELOPE</span>
+			</div>
 
-	{#if panelReady}
-		<div
-			bind:this={panelEl}
-			class="fixed z-10 flex flex-col items-center gap-2"
-			style:left="{panelX}px"
-			style:top="{panelY}px"
-		>
+			<div class="readouts pl-mono">
+				<span class="readout"><span class="readout-key">DOC</span>{docLabel}</span>
+				<span class="readout-rule" aria-hidden="true"></span>
+				<span class="readout"><span class="readout-key">ZOOM</span>{zoomPct}%</span>
+			</div>
+
+			<div class="flags">
+				{#if mirrorView}
+					<span class="flag pl-mono">MIRROR</span>
+				{/if}
+			</div>
+		</div>
+	</header>
+
+	<nav class="rail" class:rail--tucked={colorOpen} class:rail--sheet={settingsOpen} aria-label="Tools">
+		{#each TOOLS as tool (tool.id)}
+			<ToolButton
+				icon={tool.icon}
+				label={tool.label}
+				hint="{tool.label} ({tool.key})"
+				active={brush === tool.id}
+				toggle
+				marker
+				onclick={() => selectBrush(tool.id)}
+			/>
+		{/each}
+		<span class="rail-rule" aria-hidden="true"></span>
+		<ToolButton
+			icon="eyedropper"
+			label="Eyedropper"
+			hint="Eyedropper (E)"
+			active={eyedropper}
+			toggle
+			marker
+			onclick={() => (eyedropper = !eyedropper)}
+		/>
+		<ToolButton
+			icon="mirror"
+			label="Mirror view"
+			hint="Mirror view (M)"
+			active={mirrorView}
+			toggle
+			marker
+			onclick={() => (mirrorView = !mirrorView)}
+		/>
+	</nav>
+
+	<button
+		type="button"
+		class="settings-tab"
+		class:settings-tab--open={settingsOpen}
+		aria-label={settingsOpen ? 'Hide tool settings' : 'Show tool settings'}
+		aria-expanded={settingsOpen}
+		aria-controls="settings-panel"
+		title="Tool settings"
+		onclick={() => (settingsOpen = !settingsOpen)}
+	>
+		<Icon name={settingsOpen ? 'chevronRight' : 'chevronLeft'} size={13} />
+		<span class="tab-text pl-caps">Settings</span>
+	</button>
+
+	<aside
+		id="settings-panel"
+		class="settings"
+		class:settings--closed={!settingsOpen}
+		inert={!settingsOpen}
+		aria-label="Tool settings"
+	>
+		<div class="settings-head">
+			<h2 class="settings-title">Settings</h2>
+			<span class="settings-tool pl-mono">{toolLabel.toUpperCase()}</span>
 			<button
 				type="button"
-				class="flex h-5 w-full cursor-grab items-center justify-center rounded-md bg-[#2a2a2e] text-white/35 touch-none active:cursor-grabbing
-					{draggingPanel ? 'cursor-grabbing bg-[#34343a]' : ''}"
-				aria-label="Move brush panel"
-				title="Drag to move"
-				onpointerdown={onPanelDragStart}
+				class="settings-close"
+				aria-label="Hide tool settings"
+				title="Hide settings"
+				onclick={() => (settingsOpen = false)}
 			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 24 24"
-					fill="currentColor"
-					class="size-3.5"
-					aria-hidden="true"
-				>
-					<circle cx="8" cy="8" r="1.5" />
-					<circle cx="16" cy="8" r="1.5" />
-					<circle cx="8" cy="16" r="1.5" />
-					<circle cx="16" cy="16" r="1.5" />
-				</svg>
+				<Icon name="chevronDown" size={14} />
 			</button>
+		</div>
 
-			<div class={panelBox}>
-				{#if isBrush}
-					<div class="flex flex-col gap-1.5">
-						<Slider
-							bind:value={brushSettings.size}
-							min={1}
-							max={160}
-							step={0.5}
-							label="Size"
-							format={sizeLabel}
-						/>
-						<Slider
-							bind:value={brushSettings.opacity}
-							min={0}
-							max={1}
-							step={0.01}
-							label="Opacity"
-							format={pan}
-						/>
-						<Slider
-							bind:value={brushSettings.flow}
-							min={0}
-							max={1}
-							step={0.01}
-							label="Flow"
-							format={pan}
-							disabled={brushSettings.blend === 'wash'}
-							title="Flow — applies in Build mode"
-						/>
-						<Slider
-							bind:value={brushSettings.spacing}
-							min={0.01}
-							max={0.4}
-							step={0.005}
-							label="Spacing"
-							format={pan}
-						/>
-						<Slider
-							bind:value={brushSettings.hardness}
-							min={0}
-							max={1}
-							step={0.01}
-							label="Hardness"
-							format={pan}
-						/>
-						<Slider
-							bind:value={brushSettings.smoothing}
-							min={0}
-							max={1}
-							step={0.01}
-							label="Smoothing"
-							format={pan}
-						/>
-						<Slider
-							bind:value={brushSettings.jitter}
-							min={0}
-							max={1}
-							step={0.01}
-							label="Jitter"
-							format={pan}
-						/>
-					</div>
-				{:else}
+		<div class="settings-scroll">
+			{#if isBrush}
+				<section class="sec" aria-labelledby="sec-tip">
+					<h3 class="sec-title" id="sec-tip">Tip</h3>
+					<Slider
+						bind:value={brushSettings.size}
+						min={1}
+						max={160}
+						step={0.5}
+						label="Size"
+						format={pxSize}
+					/>
+					<Slider
+						bind:value={brushSettings.hardness}
+						min={0}
+						max={1}
+						step={0.01}
+						label="Hardness"
+						format={pct}
+					/>
+					<Slider
+						bind:value={brushSettings.spacing}
+						min={0.01}
+						max={0.4}
+						step={0.005}
+						label="Spacing"
+						format={pct}
+					/>
+				</section>
+
+				<section class="sec" aria-labelledby="sec-paint">
+					<h3 class="sec-title" id="sec-paint">Paint</h3>
 					<Slider
 						bind:value={brushSettings.opacity}
 						min={0}
 						max={1}
 						step={0.01}
 						label="Opacity"
-						format={pan}
+						format={pct}
 					/>
-				{/if}
-			</div>
+					<Slider
+						bind:value={brushSettings.flow}
+						min={0}
+						max={1}
+						step={0.01}
+						label="Flow"
+						format={pct}
+						disabled={brushSettings.blend === 'wash'}
+						title="Flow — applies in Build mode"
+					/>
+					<div class="field">
+						<span class="field-label">Blend</span>
+						<Segmented
+							label="Blend mode"
+							options={BLEND_OPTIONS}
+							value={brushSettings.blend}
+							onchange={(next) => (brushSettings.blend = next as BrushBlend)}
+						/>
+					</div>
+				</section>
+
+				<section class="sec" aria-labelledby="sec-dynamics">
+					<h3 class="sec-title" id="sec-dynamics">Dynamics</h3>
+					<Slider
+						bind:value={brushSettings.smoothing}
+						min={0}
+						max={1}
+						step={0.01}
+						label="Smoothing"
+						format={pct}
+					/>
+					<Slider
+						bind:value={brushSettings.jitter}
+						min={0}
+						max={1}
+						step={0.01}
+						label="Jitter"
+						format={pct}
+					/>
+					<Switch
+						label="Size pressure"
+						hint="Pen pressure scales the brush diameter"
+						bind:checked={brushSettings.pressureSize}
+					/>
+					<Switch
+						label="Opacity pressure"
+						hint="Pen pressure scales the brush opacity"
+						bind:checked={brushSettings.pressureOpacity}
+					/>
+				</section>
+			{:else if isLasso}
+				<section class="sec" aria-labelledby="sec-shape">
+					<h3 class="sec-title" id="sec-shape">Shape</h3>
+					<div class="field">
+						<span class="field-label">Mode</span>
+						<Segmented
+							label="Lasso mode"
+							options={LASSO_MODE_OPTIONS}
+							value={lassoOptions.mode}
+							onchange={(next) => (lassoOptions = { ...lassoOptions, mode: next as LassoMode })}
+						/>
+					</div>
+					<Switch
+						label="Splat"
+						hint="Scatter paint around the lasso edge"
+						bind:checked={lassoOptions.splat}
+					/>
+				</section>
+
+				<section class="sec" aria-labelledby="sec-lasso-paint">
+					<h3 class="sec-title" id="sec-lasso-paint">Paint</h3>
+					<Slider
+						bind:value={brushSettings.opacity}
+						min={0}
+						max={1}
+						step={0.01}
+						label="Opacity"
+						format={pct}
+					/>
+				</section>
+			{:else}
+				<section class="sec" aria-labelledby="sec-fan-paint">
+					<h3 class="sec-title" id="sec-fan-paint">Paint</h3>
+					<Slider
+						bind:value={brushSettings.opacity}
+						min={0}
+						max={1}
+						step={0.01}
+						label="Opacity"
+						format={pct}
+					/>
+				</section>
+			{/if}
 		</div>
-	{/if}
-{/if}
+	</aside>
 
-<div class="fixed top-4 left-4 z-50 flex max-w-[calc(100vw-2rem)] flex-col items-start gap-1.5">
-	{#if !resizeMode}
-		<label class="flex items-center gap-1.5 rounded-md bg-[#1e1e22] p-1 text-[11px] text-white/60">
-			<span class="pl-1">Tool</span>
-			<select class={toolSelect} value={brush} aria-label="Tool" onchange={onBrushChange}>
-				{#each TOOLS as t (t.id)}
-					<option value={t.id}>{t.label}</option>
-				{/each}
-			</select>
-		</label>
+	<div class="transport" role="toolbar" aria-label="Document actions">
+		<ToolButton
+			icon="undo"
+			label="Undo"
+			hint="Undo (⌘Z)"
+			disabled={!canUndo}
+			onclick={() => editApi?.undo()}
+		/>
+		<ToolButton
+			icon="redo"
+			label="Redo"
+			hint="Redo (⇧⌘Z)"
+			disabled={!canRedo}
+			onclick={() => editApi?.redo()}
+		/>
+		<span class="bar-rule" aria-hidden="true"></span>
+		<ToolButton
+			icon="history"
+			label="History"
+			hint="History — {historyStatus} (H)"
+			active={timelineOpen}
+			disclosure
+			onclick={toggleTimeline}
+		>
+			{#if historyState.busy && historyState.exportProgress === null}
+				<span class="badge badge--dot" aria-hidden="true"></span>
+			{:else if historyBadge}
+				<span class="badge pl-mono" aria-hidden="true">{historyBadge}</span>
+			{/if}
+		</ToolButton>
+		<span class="bar-rule" aria-hidden="true"></span>
+		<ToolButton
+			icon="mirror"
+			label="Mirror view"
+			hint="Mirror view (M)"
+			active={mirrorView}
+			toggle
+			onclick={() => (mirrorView = !mirrorView)}
+		/>
+		<ToolButton
+			icon="canvas"
+			label="Canvas size"
+			hint="Canvas size — {docLabel}"
+			onclick={toggleResizeMode}
+		/>
+	</div>
 
-		{#if brush === 'lasso'}
-			<div class="flex flex-wrap gap-1" role="group" aria-label="Lasso settings">
-				<label class="flex items-center gap-1.5 rounded-md bg-[#1e1e22] p-1 text-[11px] text-white/60">
-					<span class="pl-1">Mode</span>
-					<select
-						class={toolSelect}
-						value={lassoOptions.mode}
-						aria-label="Lasso mode"
-						onchange={(event) =>
-							(lassoOptions = {
-								...lassoOptions,
-								mode: (event.currentTarget as HTMLSelectElement).value as LassoMode
-							})}
-					>
-						{#each LASSO_MODES as m (m.id)}
-							<option value={m.id}>{m.label}</option>
-						{/each}
-					</select>
-				</label>
-				<button
-					type="button"
-					class={lassoOptions.splat ? settingBtnOn : settingBtn}
-					aria-pressed={lassoOptions.splat}
-					onclick={() => (lassoOptions = { ...lassoOptions, splat: !lassoOptions.splat })}
-				>
-					Splat: {lassoOptions.splat ? 'On' : 'Off'}
-				</button>
-			</div>
-		{:else if isBrush}
-			<div class="flex flex-wrap gap-1" role="group" aria-label="Brush settings">
-				<div class="flex overflow-hidden rounded shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
-					{#each BLEND_MODES as mode (mode.id)}
-						<button
-							type="button"
-							class="h-7 px-2 text-[10px] font-medium whitespace-nowrap transition
-								{brushSettings.blend === mode.id
-								? 'bg-[#4a4a52] text-white shadow-[inset_0_1px_2px_rgba(0,0,0,0.45)]'
-								: 'bg-[#2a2a2e] text-white/70 hover:bg-[#34343a] hover:text-white/90'}"
-							aria-pressed={brushSettings.blend === mode.id}
-							title={mode.hint}
-							onclick={() => (brushSettings.blend = mode.id)}
-						>
-							{mode.label}
-						</button>
-					{/each}
-				</div>
-				<button
-					type="button"
-					class={brushSettings.pressureSize ? settingBtnOn : settingBtn}
-					aria-label={brushSettings.pressureSize ? 'Pressure controls size' : 'Fixed size'}
-					aria-pressed={brushSettings.pressureSize}
-					onclick={() => (brushSettings.pressureSize = !brushSettings.pressureSize)}
-				>
-					Size pressure: {brushSettings.pressureSize ? 'On' : 'Off'}
-				</button>
-				<button
-					type="button"
-					class={brushSettings.pressureOpacity ? settingBtnOn : settingBtn}
-					aria-label={brushSettings.pressureOpacity ? 'Pressure controls opacity' : 'Fixed opacity'}
-					aria-pressed={brushSettings.pressureOpacity}
-					onclick={() => (brushSettings.pressureOpacity = !brushSettings.pressureOpacity)}
-				>
-					Opacity pressure: {brushSettings.pressureOpacity ? 'On' : 'Off'}
-				</button>
+	<span class="pl-sr" role="status">{historyAnnouncement}</span>
+
+	<TimelineSheet
+		api={historyApi}
+		state={historyState}
+		open={timelineOpen}
+		onclose={() => (timelineOpen = false)}
+	/>
+
+	<div class="dock" class:dock--sheet={settingsOpen} bind:this={dockEl}>
+		{#if colorOpen}
+			<div class="dock-pop">
+				<ColorPicker bind:color bind:open={colorOpen} bind:picking={eyedropper} />
 			</div>
 		{/if}
-
-		<div class="flex flex-wrap gap-1">
-			<button
-				type="button"
-				class={toolBtn}
-				disabled={!canUndo}
-				aria-label="Undo"
-				title="Undo"
-				onclick={() => editApi?.undo()}
-			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					class="size-4"
-					aria-hidden="true"
-				>
-					<path d="M3 7v6h6" />
-					<path d="M3 13a9 9 0 1 0 3-7.7L3 7" />
-				</svg>
-			</button>
-			<button
-				type="button"
-				class={toolBtn}
-				disabled={!canRedo}
-				aria-label="Redo"
-				title="Redo"
-				onclick={() => editApi?.redo()}
-			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					class="size-4"
-					aria-hidden="true"
-				>
-					<path d="M21 7v6h-6" />
-					<path d="M21 13a9 9 0 1 1-3-7.7L21 7" />
-				</svg>
-			</button>
-			<button
-				type="button"
-				class={mirrorView ? toolBtnOn : toolBtn}
-				aria-label="Mirror view"
-				aria-pressed={mirrorView}
-				title="Mirror view (M)"
-				onclick={() => (mirrorView = !mirrorView)}
-			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					class="size-4"
-					aria-hidden="true"
-				>
-					<path d="M12 3v18" />
-					<path d="M4 7l5 5-5 5" />
-					<path d="M20 7l-5 5 5 5" />
-				</svg>
-			</button>
-			<button
-				type="button"
-				class={toolBtn}
-				aria-label="Canvas size"
-				title="Canvas size ({docW}×{docH})"
-				onclick={toggleResizeMode}
-			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					class="size-4"
-					aria-hidden="true"
-				>
-					<path d="M15 3h6v6" />
-					<path d="M9 21H3v-6" />
-					<path d="M21 3l-7 7" />
-					<path d="M3 21l7-7" />
-				</svg>
-			</button>
-		</div>
-	{:else}
 		<button
 			type="button"
-			class={toolBtnOn}
+			class="dock-btn"
+			aria-label="Color {color.toUpperCase()} — open color picker"
+			aria-haspopup="dialog"
+			aria-expanded={colorOpen}
+			title="Color"
+			onclick={() => (colorOpen = !colorOpen)}
+		>
+			<span class="dock-swatch" style:background={color} aria-hidden="true"></span>
+			<span class="dock-hex pl-mono">{color.toUpperCase()}</span>
+			<span class="dock-chev"><Icon name={colorOpen ? 'chevronDown' : 'chevronUp'} size={12} /></span>
+		</button>
+	</div>
+
+	<div class="status pl-mono" aria-hidden="true">
+		<span class="status-value">{zoomPct}%</span>
+		<span class="status-dot">·</span>
+		<span class="status-value">{docLabel}</span>
+		<span class="status-dot">·</span>
+		<span>{toolLabel.toUpperCase()}</span>
+	</div>
+{:else}
+	<div class="resize-hud">
+		<div class="resize-card">
+			<span class="pl-caps resize-title">Canvas size</span>
+			<span class="resize-note">Drag the handles, then apply. Enter applies · Esc cancels.</span>
+		</div>
+		<button
+			type="button"
+			class="resize-exit"
 			aria-label="Exit canvas resize"
-			title="Exit canvas resize"
+			title="Exit canvas resize (Esc)"
 			onclick={toggleResizeMode}
 		>
-			<svg
-				xmlns="http://www.w3.org/2000/svg"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				class="size-4"
-				aria-hidden="true"
-			>
-				<path d="M15 3h6v6" />
-				<path d="M9 21H3v-6" />
-				<path d="M21 3l-7 7" />
-				<path d="M3 21l7-7" />
-			</svg>
+			<Icon name="close" size={16} />
+			<span>Exit</span>
 		</button>
-	{/if}
-</div>
+	</div>
+{/if}
+
+<style>
+	.topbar {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		z-index: 30;
+		height: calc(var(--pl-topbar) + env(safe-area-inset-top, 0px));
+		padding-top: env(safe-area-inset-top, 0px);
+		background: var(--pl-panel);
+		border-bottom: 1px solid var(--pl-line);
+		box-shadow: var(--pl-top-highlight);
+	}
+
+	.topbar-inner {
+		display: grid;
+		grid-template-columns: 1fr auto 1fr;
+		align-items: center;
+		height: var(--pl-topbar);
+		padding-left: max(var(--pl-gutter), env(safe-area-inset-left, 0px));
+		padding-right: max(var(--pl-gutter), env(safe-area-inset-right, 0px));
+		gap: 12px;
+	}
+
+	.brand {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.brand-dot {
+		width: 5px;
+		height: 5px;
+		flex: none;
+		border-radius: 50%;
+		background: var(--pl-accent);
+	}
+
+	.brand-name {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.18em;
+		color: var(--pl-ink);
+		white-space: nowrap;
+	}
+
+	.readouts {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font-size: 10.5px;
+		color: var(--pl-dim);
+		white-space: nowrap;
+	}
+
+	.readout {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+	}
+
+	.readout-key {
+		font-size: 9px;
+		letter-spacing: 0.08em;
+		color: var(--pl-faint);
+	}
+
+	.readout-rule {
+		width: 1px;
+		height: 11px;
+		background: var(--pl-line-strong);
+	}
+
+	.flags {
+		display: flex;
+		justify-content: flex-end;
+	}
+
+	.flag {
+		font-size: 9px;
+		letter-spacing: 0.1em;
+		color: var(--pl-accent);
+	}
+
+	.rail {
+		position: fixed;
+		z-index: 28;
+		left: max(8px, env(safe-area-inset-left, 0px));
+		top: 50%;
+		translate: 0 -50%;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 2px;
+		width: var(--pl-rail);
+		padding: 3px;
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line);
+		border-radius: var(--pl-radius);
+		box-shadow: var(--pl-shadow), var(--pl-top-highlight);
+		transition: opacity 140ms var(--pl-ease);
+	}
+
+	/* The color popover opens over the left column; tuck the rail so it never sits under it. */
+	.rail--tucked {
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.rail-rule {
+		width: 24px;
+		height: 1px;
+		background: var(--pl-line-strong);
+		margin: 4px 0;
+	}
+
+	.settings {
+		position: fixed;
+		z-index: 26;
+		top: calc(60px + env(safe-area-inset-top, 0px));
+		bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+		right: max(8px, env(safe-area-inset-right, 0px));
+		width: var(--pl-settings);
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line);
+		border-radius: var(--pl-radius);
+		box-shadow: var(--pl-shadow), var(--pl-top-highlight);
+		transition:
+			transform 150ms var(--pl-ease),
+			opacity 150ms var(--pl-ease);
+	}
+
+	.settings--closed {
+		transform: translateX(calc(100% + 24px));
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.settings-head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-height: 36px;
+		padding: 0 10px 0 12px;
+		border-bottom: 1px solid var(--pl-line);
+	}
+
+	.settings-title {
+		margin: 0;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--pl-dim);
+	}
+
+	.settings-tool {
+		margin-left: auto;
+		font-size: 9.5px;
+		letter-spacing: 0.08em;
+		color: var(--pl-faint);
+	}
+
+	.settings-close {
+		display: none;
+		place-items: center;
+		width: var(--pl-tap);
+		height: var(--pl-tap);
+		margin-right: -8px;
+		border-radius: 4px;
+		color: var(--pl-dim);
+	}
+
+	.settings-scroll {
+		flex: 1 1 auto;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding: 8px 12px 14px;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		touch-action: pan-y;
+		-webkit-overflow-scrolling: touch;
+		scrollbar-width: thin;
+		scrollbar-color: var(--pl-line-strong) transparent;
+	}
+
+	.settings-scroll::-webkit-scrollbar {
+		width: 8px;
+	}
+
+	.settings-scroll::-webkit-scrollbar-thumb {
+		background: var(--pl-line-strong);
+		border-radius: 4px;
+	}
+
+	.sec {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.sec + .sec {
+		border-top: 1px solid var(--pl-line);
+		padding-top: 10px;
+	}
+
+	.sec-title {
+		margin: 0 0 2px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--pl-faint);
+	}
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 6px 0 2px;
+	}
+
+	.field-label {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--pl-dim);
+	}
+
+	.settings-tab {
+		position: fixed;
+		z-index: 27;
+		top: 50%;
+		right: max(8px, env(safe-area-inset-right, 0px));
+		translate: 0 -50%;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		width: 20px;
+		height: 72px;
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line);
+		border-radius: 4px;
+		color: var(--pl-dim);
+		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+		transition:
+			transform 150ms var(--pl-ease),
+			opacity 150ms var(--pl-ease);
+	}
+
+	/* Keep the tab slim but give it a 44px-wide touch target on its canvas side. */
+	.settings-tab::after {
+		content: '';
+		position: absolute;
+		inset: 0 0 0 -24px;
+	}
+
+	.settings-tab--open {
+		transform: translateX(calc(-1 * var(--pl-settings)));
+		border-radius: 4px 0 0 4px;
+		border-right-color: transparent;
+	}
+
+	.tab-text {
+		display: none;
+	}
+
+	.transport {
+		position: fixed;
+		z-index: 30;
+		left: 50%;
+		bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+		translate: -50% 0;
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		height: var(--pl-transport);
+		padding: 0 4px;
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line-strong);
+		border-radius: var(--pl-radius);
+		box-shadow: var(--pl-shadow), var(--pl-top-highlight);
+	}
+
+	.bar-rule {
+		flex: none;
+		width: 1px;
+		height: 24px;
+		margin: 0 4px;
+		background: var(--pl-line);
+	}
+
+	.badge {
+		position: absolute;
+		top: 5px;
+		right: 4px;
+		display: grid;
+		place-items: center;
+		min-width: 15px;
+		height: 15px;
+		padding: 0 3px;
+		border-radius: 3px;
+		border: 1px solid var(--pl-line-strong);
+		background: var(--pl-raised);
+		font-size: 9px;
+		line-height: 1;
+		color: var(--pl-dim);
+	}
+
+	.badge--dot {
+		top: 9px;
+		right: 9px;
+		min-width: 0;
+		width: 6px;
+		height: 6px;
+		padding: 0;
+		border: 0;
+		border-radius: 50%;
+		background: var(--pl-accent);
+	}
+
+	.dock {
+		position: fixed;
+		z-index: 32;
+		left: max(var(--pl-gutter), env(safe-area-inset-left, 0px));
+		bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+		transition: opacity 140ms var(--pl-ease);
+	}
+
+	.dock-btn {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		height: var(--pl-tap);
+		padding: 0 10px 0 5px;
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line);
+		border-radius: var(--pl-radius);
+		box-shadow:
+			0 4px 14px rgba(0, 0, 0, 0.28),
+			var(--pl-top-highlight);
+		transition: transform 130ms var(--pl-ease);
+	}
+
+	.dock-btn:active {
+		transform: scale(0.98);
+	}
+
+	@media (hover: hover) {
+		.dock-btn:hover {
+			background: var(--pl-hover);
+		}
+	}
+
+	.dock-swatch {
+		width: 32px;
+		height: 32px;
+		flex: none;
+		border-radius: 4px;
+		border: 1px solid var(--pl-line-strong);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+	}
+
+	.dock-hex {
+		font-size: 10px;
+		letter-spacing: 0.05em;
+		color: var(--pl-ink);
+	}
+
+	.dock-chev {
+		color: var(--pl-faint);
+	}
+
+	.dock-pop {
+		position: absolute;
+		left: 0;
+		bottom: calc(100% + 8px);
+		z-index: 40;
+	}
+
+	.status {
+		position: fixed;
+		z-index: 20;
+		right: max(14px, env(safe-area-inset-right, 0px));
+		bottom: calc(31px + env(safe-area-inset-bottom, 0px));
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		font-size: 10px;
+		letter-spacing: 0.05em;
+		color: var(--pl-faint);
+		pointer-events: none;
+	}
+
+	.status-value {
+		color: var(--pl-dim);
+	}
+
+	.status-dot {
+		color: var(--pl-line-strong);
+	}
+
+	.resize-hud {
+		position: fixed;
+		z-index: 45;
+		top: calc(10px + env(safe-area-inset-top, 0px));
+		left: max(10px, env(safe-area-inset-left, 0px));
+		right: max(10px, env(safe-area-inset-right, 0px));
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 12px;
+		pointer-events: none;
+	}
+
+	.resize-card {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		max-width: 34ch;
+		padding: 8px 12px;
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line);
+		border-radius: var(--pl-radius);
+		box-shadow: var(--pl-shadow), var(--pl-top-highlight);
+	}
+
+	.resize-title {
+		color: var(--pl-dim);
+	}
+
+	.resize-note {
+		font-size: 10px;
+		line-height: 1.45;
+		color: var(--pl-faint);
+	}
+
+	.resize-exit {
+		pointer-events: auto;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		height: var(--pl-tap);
+		padding: 0 14px;
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line-strong);
+		border-radius: var(--pl-radius);
+		box-shadow: var(--pl-shadow), var(--pl-top-highlight);
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--pl-ink);
+		transition: transform 130ms var(--pl-ease);
+	}
+
+	.resize-exit:active {
+		transform: scale(0.97);
+	}
+
+	@media (hover: hover) {
+		.resize-exit:hover {
+			background: var(--pl-hover);
+		}
+	}
+
+	@media (max-width: 900px) {
+		.settings {
+			top: auto;
+			left: max(12px, env(safe-area-inset-left, 0px));
+			right: max(12px, env(safe-area-inset-right, 0px));
+			width: auto;
+			bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+			max-height: 44vh;
+		}
+
+		.rail--sheet {
+			opacity: 0;
+			pointer-events: none;
+		}
+
+		.dock--sheet {
+			opacity: 0;
+			pointer-events: none;
+		}
+
+		.settings--closed {
+			transform: translateY(14px);
+			opacity: 0;
+			pointer-events: none;
+		}
+
+		.settings-head {
+			min-height: var(--pl-tap);
+		}
+
+		.settings-close {
+			display: grid;
+		}
+
+		.settings-tab {
+			top: auto;
+			left: max(12px, env(safe-area-inset-left, 0px));
+			right: max(12px, env(safe-area-inset-right, 0px));
+			bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+			translate: none;
+			width: auto;
+			height: var(--pl-tap);
+			flex-direction: row-reverse;
+			justify-content: space-between;
+			padding: 0 12px;
+			border-radius: var(--pl-radius);
+		}
+
+		.settings-tab::after {
+			display: none;
+		}
+
+		.settings-tab--open {
+			display: none;
+		}
+
+		.tab-text {
+			display: inline;
+			color: var(--pl-dim);
+		}
+	}
+
+	@media (max-width: 720px) {
+		.status {
+			display: none;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.readouts .readout:first-child,
+		.readout-rule {
+			display: none;
+		}
+
+		.topbar-inner {
+			gap: 8px;
+		}
+
+		.brand-name {
+			letter-spacing: 0.12em;
+		}
+
+		.dock-hex {
+			display: none;
+		}
+
+		.dock-btn {
+			padding: 0 5px;
+		}
+
+		.settings-tool {
+			display: none;
+		}
+	}
+
+	@media (max-width: 420px) {
+		.dock {
+			bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+		}
+
+		.settings-tab {
+			left: auto;
+			width: auto;
+			padding: 0 14px;
+			gap: 10px;
+		}
+	}
+</style>
