@@ -1,7 +1,7 @@
 <script lang="ts">
 	const LOUPE_RADIUS = 11;
-	const LOUPE_SIZE = 118;
-	const LOUPE_OFFSET_Y = 72;
+	const LOUPE_SIZE = 120;
+	const LOUPE_OFFSET_Y = 74;
 
 	let {
 		color = $bindable('#000000'),
@@ -25,6 +25,9 @@
 	let loupeCanvasEl: HTMLCanvasElement | undefined = $state();
 	let loupeBusy = false;
 	let loupePending: { sx: number; sy: number } | null = null;
+
+	const loupeLeft = $derived(loupeX - LOUPE_SIZE / 2);
+	const loupeTop = $derived(loupeY - LOUPE_OFFSET_Y - LOUPE_SIZE / 2);
 
 	async function updateLoupe(sx: number, sy: number) {
 		if (loupeBusy) {
@@ -50,9 +53,9 @@
 				const full = LOUPE_RADIUS * 2 + 1;
 
 				if (!patch) {
-					loupeHex = '#1c1c1d';
+					loupeHex = '#131215';
 					if (ctx && canvas) {
-						ctx.fillStyle = '#1c1c1d';
+						ctx.fillStyle = '#131215';
 						ctx.fillRect(0, 0, full, full);
 					}
 					continue;
@@ -100,7 +103,7 @@
 </script>
 
 <div
-	class="fixed inset-0 z-50 touch-none"
+	class="surface"
 	style:cursor="none"
 	role="presentation"
 	aria-label="Eyedropper"
@@ -111,63 +114,99 @@
 >
 	{#if loupeActive}
 		<div
-			class="loupe pointer-events-none"
-			style:left="{loupeX}px"
-			style:top="{loupeY - LOUPE_OFFSET_Y}px"
+			class="loupe"
+			style:transform="translate3d({loupeLeft}px, {loupeTop}px, 0)"
 			style:width="{LOUPE_SIZE}px"
 			style:height="{LOUPE_SIZE}px"
 			aria-hidden="true"
 		>
-			<canvas
-				bind:this={loupeCanvasEl}
-				width={LOUPE_RADIUS * 2 + 1}
-				height={LOUPE_RADIUS * 2 + 1}
-				class="loupe-canvas"
-			></canvas>
-			<div class="loupe-cross" style:background={loupeHex}></div>
-			<div class="loupe-ring"></div>
+			<span class="glass">
+				<canvas
+					bind:this={loupeCanvasEl}
+					width={LOUPE_RADIUS * 2 + 1}
+					height={LOUPE_RADIUS * 2 + 1}
+					class="canvas"
+				></canvas>
+				<span class="cross" style:background={loupeHex}></span>
+				<span class="vignette"></span>
+			</span>
+			<span class="readout pl-mono">{loupeHex.toUpperCase()}</span>
 		</div>
 	{/if}
 </div>
 
 <style>
+	.surface {
+		position: fixed;
+		inset: 0;
+		z-index: 50;
+		touch-action: none;
+	}
+
 	.loupe {
 		position: fixed;
-		translate: -50% -50%;
-		border-radius: 9999px;
-		overflow: hidden;
+		top: 0;
+		left: 0;
+		pointer-events: none;
+		border-radius: 50%;
+		background: var(--pl-bg);
 		box-shadow:
-			0 8px 28px rgba(0, 0, 0, 0.45),
-			0 0 0 3px #fff,
-			0 0 0 4px rgba(0, 0, 0, 0.35);
-		background: #111;
+			0 0 0 1px rgba(255, 255, 255, 0.85),
+			0 0 0 4px rgba(19, 18, 21, 0.9),
+			0 18px 36px rgba(0, 0, 0, 0.5);
 		z-index: 60;
 	}
 
-	.loupe-canvas {
+	.glass {
+		position: absolute;
+		inset: 0;
+		display: block;
+		border-radius: 50%;
+		overflow: hidden;
+	}
+
+	.canvas {
+		display: block;
 		width: 100%;
 		height: 100%;
 		image-rendering: pixelated;
-		display: block;
 	}
 
-	.loupe-cross {
+	.cross {
 		position: absolute;
 		top: 50%;
 		left: 50%;
-		width: 14px;
-		height: 14px;
+		width: 15px;
+		height: 15px;
 		translate: -50% -50%;
-		border-radius: 9999px;
-		border: 2px solid #fff;
-		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+		border-radius: 50%;
+		border: 2px solid var(--pl-ink);
+		box-shadow:
+			0 0 0 1px rgba(0, 0, 0, 0.55),
+			0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
-	.loupe-ring {
+	.vignette {
 		position: absolute;
 		inset: 0;
-		border-radius: 9999px;
-		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+		border-radius: 50%;
+		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.28);
 		pointer-events: none;
+	}
+
+	.readout {
+		position: absolute;
+		left: 50%;
+		bottom: -30px;
+		translate: -50% 0;
+		padding: 3px 7px;
+		font-size: 10px;
+		letter-spacing: 0.06em;
+		color: var(--pl-ink);
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line-strong);
+		border-radius: 3px;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+		white-space: nowrap;
 	}
 </style>
