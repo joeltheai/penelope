@@ -28,6 +28,7 @@
 		"wrangler": "^4.97.0"
 	},
 	"dependencies": {
+		"mediabunny": "^1.65.2",
 		"typegpu": "^0.11.2"
 	}
 }
