@@ -36,13 +36,13 @@
 	}
 </script>
 
-<label class="slider" class:slider--disabled={disabled} {title}>
-	<div class="slider-head">
-		<span class="slider-label">{label}</span>
-		<span class="slider-value">{display}</span>
-	</div>
+<label class="field" class:field--disabled={disabled} {title}>
+	<span class="head">
+		<span class="label">{label}</span>
+		<span class="value pl-mono">{display}</span>
+	</span>
 	<input
-		class="slider-input"
+		class="input"
 		type="range"
 		{min}
 		{max}
@@ -50,7 +50,7 @@
 		{disabled}
 		bind:value
 		aria-label={label || title}
-		style:--slider-percent="{percent}%"
+		style:--fill="{percent}%"
 		onpointerdown={onPointerDown}
 		onpointerup={stopDrag}
 		onpointercancel={stopDrag}
@@ -59,111 +59,104 @@
 </label>
 
 <style>
-	.slider {
+	.field {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
 		width: 100%;
 		min-width: 0;
 	}
 
-	.slider--disabled {
-		opacity: 0.4;
+	.field--disabled {
+		opacity: 0.42;
 	}
 
-	.slider-head {
+	.head {
 		display: flex;
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 8px;
+		margin-bottom: -3px;
+	}
+
+	.label {
 		font-size: 10px;
-		line-height: 1.1;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--pl-dim);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.value {
+		font-size: 10.5px;
 		letter-spacing: 0.02em;
-		color: rgba(255, 255, 255, 0.55);
+		color: var(--pl-ink);
+		flex: none;
 	}
 
-	.slider-value {
-		font-variant-numeric: tabular-nums;
-		color: rgba(255, 255, 255, 0.85);
-	}
-
-	.slider-input {
+	.input {
 		appearance: none;
 		-webkit-appearance: none;
 		width: 100%;
-		height: 16px;
+		height: var(--pl-tap);
 		margin: 0;
 		background: transparent;
 		cursor: pointer;
 		touch-action: none;
 	}
 
-	.slider-input:disabled {
-		cursor: not-allowed;
+	.input:disabled {
+		cursor: default;
 	}
 
-	.slider-input::-webkit-slider-runnable-track {
-		height: 4px;
-		border-radius: 999px;
+	.input::-webkit-slider-runnable-track {
+		height: 3px;
+		border-radius: 2px;
 		background: linear-gradient(
 			to right,
-			#8fb6ff 0%,
-			#8fb6ff var(--slider-percent),
-			#3a3a40 var(--slider-percent),
-			#3a3a40 100%
+			var(--pl-accent) 0%,
+			var(--pl-accent) var(--fill),
+			var(--pl-line-strong) var(--fill),
+			var(--pl-line-strong) 100%
 		);
 	}
 
-	.slider-input::-webkit-slider-thumb {
+	.input::-webkit-slider-thumb {
 		appearance: none;
 		-webkit-appearance: none;
-		width: 13px;
-		height: 13px;
+		width: 12px;
+		height: 12px;
 		margin-top: -4.5px;
 		border-radius: 50%;
-		background: #f4f5f7;
+		background: var(--pl-ink);
 		border: none;
 		box-shadow:
 			0 1px 2px rgba(0, 0, 0, 0.55),
-			0 0 0 1px rgba(0, 0, 0, 0.25);
+			0 0 0 1px rgba(0, 0, 0, 0.3);
 	}
 
-	.slider-input:focus-visible {
-		outline: none;
+	.input::-moz-range-track {
+		height: 3px;
+		border-radius: 2px;
+		background: var(--pl-line-strong);
 	}
 
-	.slider-input:focus-visible::-webkit-slider-thumb {
-		box-shadow:
-			0 0 0 2px #1e1e22,
-			0 0 0 4px rgba(143, 182, 255, 0.85);
+	.input::-moz-range-progress {
+		height: 3px;
+		border-radius: 2px;
+		background: var(--pl-accent);
 	}
 
-	.slider-input::-moz-range-track {
-		height: 4px;
-		border-radius: 999px;
-		background: #3a3a40;
-	}
-
-	.slider-input::-moz-range-progress {
-		height: 4px;
-		border-radius: 999px;
-		background: #8fb6ff;
-	}
-
-	.slider-input::-moz-range-thumb {
-		width: 13px;
-		height: 13px;
+	.input::-moz-range-thumb {
+		width: 12px;
+		height: 12px;
 		border: none;
 		border-radius: 50%;
-		background: #f4f5f7;
+		background: var(--pl-ink);
 		box-shadow:
 			0 1px 2px rgba(0, 0, 0, 0.55),
-			0 0 0 1px rgba(0, 0, 0, 0.25);
-	}
-
-	.slider-input:focus-visible::-moz-range-thumb {
-		box-shadow:
-			0 0 0 2px #1e1e22,
-			0 0 0 4px rgba(143, 182, 255, 0.85);
+			0 0 0 1px rgba(0, 0, 0, 0.3);
 	}
 </style>
