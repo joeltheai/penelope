@@ -142,16 +142,17 @@
 
 	.label {
 		font-size: 10px;
-		font-weight: 600;
-		letter-spacing: 0.08em;
+		font-weight: 700;
+		letter-spacing: 0.12em;
 		text-transform: uppercase;
 		color: var(--pl-dim);
 	}
 
 	.value {
 		font-size: 10.5px;
-		color: var(--pl-ink);
+		color: #cfe9ff;
 		flex: none;
+		text-shadow: 0 0 10px rgba(87, 247, 255, 0.3);
 	}
 
 	.track {
@@ -177,24 +178,26 @@
 	.rail {
 		display: block;
 		width: 100%;
-		height: 16px;
-		border-radius: 3px;
+		height: 15px;
+		border-radius: 6px;
 		box-shadow:
-			inset 0 0 0 1px rgba(0, 0, 0, 0.5),
-			inset 0 1px 2px rgba(0, 0, 0, 0.3);
+			inset 0 1px 2px rgba(0, 0, 0, 0.5),
+			0 0 0 1px rgba(255, 255, 255, 0.12),
+			0 0 14px rgba(87, 247, 255, 0.16);
 	}
 
 	.thumb {
 		position: absolute;
 		top: 50%;
-		width: 14px;
-		height: 14px;
+		width: 16px;
+		height: 16px;
 		translate: -50% -50%;
 		border-radius: 50%;
-		border: 2px solid var(--pl-ink);
+		border: 2px solid #0b0920;
 		box-shadow:
-			0 1px 3px rgba(0, 0, 0, 0.5),
-			0 0 0 1px rgba(0, 0, 0, 0.3);
+			0 0 0 1px rgba(255, 255, 255, 0.8),
+			0 0 12px rgba(87, 247, 255, 0.75),
+			0 1px 3px rgba(0, 0, 0, 0.6);
 		pointer-events: none;
 	}
 </style>

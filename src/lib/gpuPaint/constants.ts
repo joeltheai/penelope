@@ -8,9 +8,9 @@ export const FLOATS_PER_VERT = 7;
 export const VERTS_PER_STAMP = 6;
 export const MAX_VERT_FLOATS = MAX_STAMPS_PER_FLUSH * VERTS_PER_STAMP * FLOATS_PER_VERT;
 
-export const GRID_BG = [0.11, 0.11, 0.114] as const;
-export const GRID_LINE = [0.18, 0.18, 0.185] as const;
-export const GRID_MAJOR = [0.24, 0.24, 0.25] as const;
+export const GRID_BG = [0.035, 0.028, 0.075] as const;
+export const GRID_LINE = [0.08, 0.095, 0.18] as const;
+export const GRID_MAJOR = [0.14, 0.19, 0.34] as const;
 export const GRID_SPACING = 16;
 export const GRID_MAJOR_EVERY = 4;
 export const MAX_PRESENT_DPR = 2;

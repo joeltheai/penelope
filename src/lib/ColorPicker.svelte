@@ -264,17 +264,20 @@
 	.picker {
 		width: 252px;
 		max-height: min(60vh, 380px);
-		padding: 10px;
+		padding: 11px;
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
 		overflow-y: auto;
 		overscroll-behavior: contain;
 		touch-action: pan-y;
-		background: var(--pl-panel);
+		background: var(--pl-panel-bg);
 		border: 1px solid var(--pl-line-strong);
-		border-radius: var(--pl-radius);
-		box-shadow: var(--pl-shadow), var(--pl-top-highlight);
+		border-radius: 16px;
+		box-shadow:
+			var(--pl-shadow),
+			var(--pl-top-highlight),
+			0 0 26px rgba(87, 247, 255, 0.18);
 	}
 
 	.head {
@@ -287,29 +290,37 @@
 		width: 30px;
 		height: 30px;
 		flex: none;
-		border-radius: 4px;
-		border: 1px solid var(--pl-line-strong);
-		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+		border-radius: 9px;
+		border: 2px solid rgba(255, 255, 255, 0.66);
+		box-shadow:
+			inset 0 2px 4px rgba(255, 255, 255, 0.3),
+			inset 0 -2px 4px rgba(0, 0, 0, 0.3),
+			0 0 14px rgba(87, 247, 255, 0.3);
 	}
 
 	.hex {
 		flex: 1;
 		min-width: 0;
 		height: var(--pl-tap);
-		padding: 0 8px;
+		padding: 0 9px;
 		font-size: 11px;
-		letter-spacing: 0.05em;
+		letter-spacing: 0.1em;
 		color: var(--pl-ink);
-		background: var(--pl-bg);
+		background: rgba(3, 2, 10, 0.7);
 		border: 1px solid var(--pl-line);
-		border-radius: 4px;
+		border-radius: 8px;
 		text-transform: uppercase;
 		-webkit-user-select: text;
 		user-select: text;
+		transition:
+			border-color 130ms var(--pl-ease),
+			box-shadow 130ms var(--pl-ease);
 	}
 
 	.hex:focus {
-		border-color: var(--pl-line-strong);
+		outline: none;
+		border-color: var(--pl-accent);
+		box-shadow: 0 0 12px rgba(87, 247, 255, 0.3);
 	}
 
 	.icon-btn {
@@ -318,9 +329,12 @@
 		width: var(--pl-tap);
 		height: var(--pl-tap);
 		flex: none;
-		border-radius: 4px;
+		border-radius: 10px;
 		color: var(--pl-dim);
-		transition: transform 130ms var(--pl-ease);
+		transition:
+			transform 130ms var(--pl-ease),
+			background 130ms var(--pl-ease),
+			color 130ms var(--pl-ease);
 	}
 
 	.icon-btn:active {
@@ -329,7 +343,7 @@
 
 	@media (hover: hover) {
 		.icon-btn:hover {
-			background: var(--pl-hover);
+			background: rgba(87, 247, 255, 0.09);
 			color: var(--pl-ink);
 		}
 	}
@@ -337,6 +351,7 @@
 	.icon-btn--on {
 		background: var(--pl-accent-soft);
 		color: var(--pl-accent);
+		box-shadow: 0 0 14px rgba(87, 247, 255, 0.28);
 	}
 
 	.model {

@@ -37,27 +37,33 @@
 		display: flex;
 		width: 100%;
 		height: var(--pl-tap);
-		padding: 3px;
-		gap: 3px;
-		background: var(--pl-bg);
+		padding: 4px;
+		gap: 4px;
+		background: linear-gradient(180deg, rgba(0, 0, 0, 0.45), rgba(255, 255, 255, 0.03));
 		border: 1px solid var(--pl-line);
-		border-radius: 4px;
-		box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+		border-radius: 11px;
+		box-shadow:
+			inset 0 2px 5px rgba(0, 0, 0, 0.55),
+			inset 0 -1px 0 rgba(255, 255, 255, 0.05);
 	}
 
 	.seg-btn {
 		flex: 1;
 		min-width: 0;
-		border-radius: 3px;
+		border-radius: 8px;
 		color: var(--pl-dim);
 		font-size: 10px;
-		font-weight: 600;
-		letter-spacing: 0.08em;
+		font-weight: 700;
+		letter-spacing: 0.12em;
 		text-transform: uppercase;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		transition: transform 120ms var(--pl-ease);
+		transition:
+			transform 120ms var(--pl-ease),
+			color 120ms var(--pl-ease),
+			background 120ms var(--pl-ease),
+			box-shadow 120ms var(--pl-ease);
 	}
 
 	.seg-btn:active:not(:disabled) {
@@ -67,15 +73,20 @@
 	@media (hover: hover) {
 		.seg-btn:hover:not(:disabled) {
 			color: var(--pl-ink);
+			background: rgba(87, 247, 255, 0.07);
 		}
 	}
 
-	.seg-btn--on {
-		background: var(--pl-raised);
-		color: var(--pl-ink);
+	.seg-btn--on,
+	.seg-btn--on:hover:not(:disabled) {
+		background: linear-gradient(180deg, #b6feff 0%, #57e8ff 44%, #3d9bff 100%);
+		color: #03101f;
+		text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
 		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.06),
-			0 1px 2px rgba(0, 0, 0, 0.35);
+			inset 0 1px 0 rgba(255, 255, 255, 0.6),
+			0 0 0 1px rgba(255, 255, 255, 0.3),
+			0 2px 6px rgba(0, 0, 0, 0.4),
+			0 0 16px rgba(87, 247, 255, 0.5);
 	}
 
 	.seg-btn:disabled {

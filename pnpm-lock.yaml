@@ -8,6 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@ui-sdk/core':
+        specifier: 0.1.0-beta.3
+        version: 0.1.0-beta.3
+      '@ui-sdk/svelte':
+        specifier: 0.1.0-beta.3
+        version: 0.1.0-beta.3(@ui-sdk/core@0.1.0-beta.3)(svelte@5.56.8)
       mediabunny:
         specifier: ^1.65.2
         version: 1.65.2
@@ -771,6 +777,15 @@ packages:
 
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
+
+  '@ui-sdk/core@0.1.0-beta.3':
+    resolution: {integrity: sha512-K2cMLsxY2jgX7Eu7UiP/DU14euO8KLIeDjMrDsM/JFj+faeLJAzAp0eUpTvQlTxRnhJhvTIhPwG8GO9ZOnEKdQ==}
+
+  '@ui-sdk/svelte@0.1.0-beta.3':
+    resolution: {integrity: sha512-tExS6MsPaWK9SCRN43LMtWXSWbomU1iiFvrMOUpwJ5ASsB61OBuaRzUyNhakbdV+TkbLTR9PIidN6i6/UVHOjQ==}
+    peerDependencies:
+      '@ui-sdk/core': ^0.1.0-beta.3
+      svelte: '>=5.33'
 
   '@vitejs/plugin-basic-ssl@2.3.0':
     resolution: {integrity: sha512-bdyo8rB3NnQbikdMpHaML9Z1OZPBu6fFOBo+OtxsBlvMJtysWskmBcnbIDhUqgC8tcxNv/a+BcV5U+2nQMm1OQ==}
@@ -1857,6 +1872,13 @@ snapshots:
   '@types/estree@1.0.9': {}
 
   '@types/trusted-types@2.0.7': {}
+
+  '@ui-sdk/core@0.1.0-beta.3': {}
+
+  '@ui-sdk/svelte@0.1.0-beta.3(@ui-sdk/core@0.1.0-beta.3)(svelte@5.56.8)':
+    dependencies:
+      '@ui-sdk/core': 0.1.0-beta.3
+      svelte: 5.56.8
 
   '@vitejs/plugin-basic-ssl@2.3.0(vite@8.2.0(esbuild@0.28.1)(jiti@2.7.0))':
     dependencies:

@@ -1207,13 +1207,13 @@
 <canvas
 	bind:this={canvasEl}
 	class="fixed inset-0 block h-full w-full touch-none select-none [-webkit-touch-callout:none]"
-	style:background="#1c1c1d"
+	style:background="#080614"
 ></canvas>
 
 {#if booting && !gpuError}
 	<div class="pointer-events-none fixed inset-0 z-40 grid place-items-center">
 		<div
-			class="rounded-md border border-white/10 bg-[#1a191d] px-3 py-2 text-[11px] tracking-[0.08em] text-white/55 uppercase shadow-[0_12px_32px_rgba(0,0,0,0.4)]"
+			class="rounded-xl border border-cyan-200/25 bg-[#120f2b]/90 px-4 py-2 text-[11px] tracking-[0.18em] text-cyan-100/70 uppercase shadow-[0_14px_40px_rgba(0,0,0,0.6),0_0_26px_rgba(87,247,255,0.2)]"
 			role="status"
 		>
 			Preparing canvas
@@ -1248,7 +1248,9 @@
 
 {#if gpuError}
 	<div class="pointer-events-none fixed inset-0 z-20 flex items-center justify-center p-6 text-center">
-		<p class="max-w-md rounded-lg bg-black/70 px-4 py-3 text-sm text-white">
+		<p
+			class="max-w-md rounded-xl border border-cyan-200/20 bg-[#120f2b]/90 px-4 py-3 text-sm text-cyan-50 shadow-[0_14px_40px_rgba(0,0,0,0.6)]"
+		>
 			{gpuError}
 		</p>
 	</div>

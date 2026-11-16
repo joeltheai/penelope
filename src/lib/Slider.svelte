@@ -80,8 +80,8 @@
 
 	.label {
 		font-size: 10px;
-		font-weight: 600;
-		letter-spacing: 0.08em;
+		font-weight: 700;
+		letter-spacing: 0.12em;
 		text-transform: uppercase;
 		color: var(--pl-dim);
 		white-space: nowrap;
@@ -91,9 +91,10 @@
 
 	.value {
 		font-size: 10.5px;
-		letter-spacing: 0.02em;
-		color: var(--pl-ink);
+		letter-spacing: 0.04em;
+		color: #cfe9ff;
 		flex: none;
+		text-shadow: 0 0 10px rgba(87, 247, 255, 0.3);
 	}
 
 	.input {
@@ -112,51 +113,56 @@
 	}
 
 	.input::-webkit-slider-runnable-track {
-		height: 3px;
-		border-radius: 2px;
-		background: linear-gradient(
-			to right,
-			var(--pl-accent) 0%,
-			var(--pl-accent) var(--fill),
-			var(--pl-line-strong) var(--fill),
-			var(--pl-line-strong) 100%
-		);
+		height: 4px;
+		border-radius: 999px;
+		background:
+			linear-gradient(90deg, var(--pl-accent), #8f7bff 58%, var(--pl-accent-2)) 0 /
+				var(--fill) 100% no-repeat,
+			rgba(255, 255, 255, 0.09);
+		box-shadow:
+			inset 0 1px 2px rgba(0, 0, 0, 0.6),
+			0 0 10px rgba(87, 247, 255, 0.14);
 	}
 
 	.input::-webkit-slider-thumb {
 		appearance: none;
 		-webkit-appearance: none;
-		width: 12px;
-		height: 12px;
+		width: 13px;
+		height: 13px;
 		margin-top: -4.5px;
 		border-radius: 50%;
-		background: var(--pl-ink);
+		background: radial-gradient(circle at 35% 30%, #ffffff 0 40%, #c9faff 64%, #6ee7ff 100%);
 		border: none;
 		box-shadow:
-			0 1px 2px rgba(0, 0, 0, 0.55),
-			0 0 0 1px rgba(0, 0, 0, 0.3);
+			0 0 0 1px rgba(255, 255, 255, 0.65),
+			0 0 10px rgba(87, 247, 255, 0.85),
+			0 0 20px rgba(87, 247, 255, 0.35),
+			0 1px 3px rgba(0, 0, 0, 0.6);
 	}
 
 	.input::-moz-range-track {
-		height: 3px;
-		border-radius: 2px;
-		background: var(--pl-line-strong);
+		height: 4px;
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.09);
+		box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
 	}
 
 	.input::-moz-range-progress {
-		height: 3px;
-		border-radius: 2px;
-		background: var(--pl-accent);
+		height: 4px;
+		border-radius: 999px;
+		background: linear-gradient(90deg, var(--pl-accent), #8f7bff 58%, var(--pl-accent-2));
+		box-shadow: 0 0 10px rgba(87, 247, 255, 0.2);
 	}
 
 	.input::-moz-range-thumb {
-		width: 12px;
-		height: 12px;
+		width: 13px;
+		height: 13px;
 		border: none;
 		border-radius: 50%;
-		background: var(--pl-ink);
+		background: radial-gradient(circle at 35% 30%, #ffffff 0 40%, #c9faff 64%, #6ee7ff 100%);
 		box-shadow:
-			0 1px 2px rgba(0, 0, 0, 0.55),
-			0 0 0 1px rgba(0, 0, 0, 0.3);
+			0 0 0 1px rgba(255, 255, 255, 0.65),
+			0 0 10px rgba(87, 247, 255, 0.85),
+			0 1px 3px rgba(0, 0, 0, 0.6);
 	}
 </style>

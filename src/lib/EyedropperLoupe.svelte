@@ -151,9 +151,10 @@
 		border-radius: 50%;
 		background: var(--pl-bg);
 		box-shadow:
-			0 0 0 1px rgba(255, 255, 255, 0.85),
-			0 0 0 4px rgba(19, 18, 21, 0.9),
-			0 18px 36px rgba(0, 0, 0, 0.5);
+			0 0 0 1px rgba(87, 247, 255, 0.9),
+			0 0 0 5px rgba(8, 6, 20, 0.9),
+			0 0 28px rgba(87, 247, 255, 0.45),
+			0 18px 36px rgba(0, 0, 0, 0.6);
 		z-index: 60;
 	}
 
@@ -180,9 +181,10 @@
 		height: 15px;
 		translate: -50% -50%;
 		border-radius: 50%;
-		border: 2px solid var(--pl-ink);
+		border: 2px solid #ffffff;
 		box-shadow:
 			0 0 0 1px rgba(0, 0, 0, 0.55),
+			0 0 10px rgba(87, 247, 255, 0.8),
 			0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
@@ -199,14 +201,16 @@
 		left: 50%;
 		bottom: -30px;
 		translate: -50% 0;
-		padding: 3px 7px;
+		padding: 3px 9px;
 		font-size: 10px;
-		letter-spacing: 0.06em;
-		color: var(--pl-ink);
+		letter-spacing: 0.12em;
+		color: var(--pl-accent);
 		background: var(--pl-panel);
 		border: 1px solid var(--pl-line-strong);
-		border-radius: 3px;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+		border-radius: 999px;
+		box-shadow:
+			0 4px 12px rgba(0, 0, 0, 0.4),
+			0 0 14px rgba(87, 247, 255, 0.28);
 		white-space: nowrap;
 	}
 </style>
