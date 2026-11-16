@@ -36,12 +36,13 @@ import {
 } from './schemas';
 import { createPaintPipelines } from './pipelines';
 import { createStrokeBoundsTracker } from './strokeBounds';
-import { createGpuUndoStack } from './undo';
 import type {
 	BrushKind,
 	BrushSettings,
 	GpuPaint,
+	GpuPaintOptions,
 	LassoOptions,
+	RasterHistoryEntry,
 	Rect,
 	ToolKind,
 	ViewState
@@ -55,7 +56,7 @@ function isFanTool(b: ToolKind): b is FanKind {
 
 export async function createGpuPaint(
 	canvas: HTMLCanvasElement,
-	opts?: { width?: number; height?: number }
+	opts?: GpuPaintOptions
 ): Promise<GpuPaint> {
 	if (!navigator.gpu) throw new Error(webGpuUnavailableMessage());
 
@@ -108,7 +109,17 @@ export async function createGpuPaint(
 	let docTex = createDocTexture(docW, docH);
 	let strokeTex = createDocTexture(docW, docH);
 	let lassoStencilTex = createLassoStencilTexture(docW, docH);
-	fillTexture(root.unwrap(docTex), [1, 1, 1, 1]);
+	const initialPixels = opts?.pixels?.byteLength === docW * docH * 4 ? opts.pixels : null;
+	if (initialPixels) {
+		device.queue.writeTexture(
+			{ texture: root.unwrap(docTex), origin: { x: 0, y: 0, z: 0 } },
+			initialPixels,
+			{ bytesPerRow: docW * 4, rowsPerImage: docH },
+			{ width: docW, height: docH, depthOrArrayLayers: 1 }
+		);
+	} else {
+		fillTexture(root.unwrap(docTex), [1, 1, 1, 1]);
+	}
 
 	const brushMipLevels = Math.floor(Math.log2(BRUSH_TIP_SIZE)) + 1;
 	const brushTex = root
@@ -205,8 +216,6 @@ export async function createGpuPaint(
 		pipelines.rebuildDocSamplePipelines();
 	};
 	rebuildDocSamplePipelines();
-
-	const undo = createGpuUndoStack(device);
 
 	let settings: BrushSettings = { ...DEFAULT_BRUSH_SETTINGS };
 	let brushHardness = -1;
@@ -528,41 +537,170 @@ export async function createGpuPaint(
 		if (!externalEncoder) device.queue.submit([encoder.finish()]);
 	}
 
-	async function readTexturePixels(
-		texture: typeof docTex,
-		x0: number,
-		y0: number,
-		w: number,
-		h: number
-	): Promise<Uint8Array | null> {
-		if (destroyed || w < 1 || h < 1) return null;
-		const bytesPerPixel = 4;
-		const unpadded = w * bytesPerPixel;
-		const bytesPerRow = Math.max(256, Math.ceil(unpadded / 256) * 256);
+	type RegionLayout = {
+		bounds: Rect;
+		unpadded: number;
+		bytesPerRow: number;
+		offset: number;
+	};
+
+	function layoutRegions(regions: Rect[]) {
+		let totalSize = 0;
+		const layouts = regions.map((bounds) => {
+			const unpadded = bounds.w * 4;
+			const bytesPerRow = Math.max(256, Math.ceil(unpadded / 256) * 256);
+			const offset = totalSize;
+			totalSize += bytesPerRow * bounds.h;
+			return { bounds, unpadded, bytesPerRow, offset };
+		});
+		return { layouts, totalSize };
+	}
+
+	function encodeRegionCopies(
+		encoder: GPUCommandEncoder,
+		texture: GPUTexture,
+		staging: GPUBuffer,
+		layouts: RegionLayout[],
+		baseOffset: number
+	) {
+		for (const { bounds, bytesPerRow, offset } of layouts) {
+			encoder.copyTextureToBuffer(
+				{ texture, origin: { x: bounds.x, y: bounds.y, z: 0 } },
+				{ buffer: staging, offset: baseOffset + offset, bytesPerRow },
+				{ width: bounds.w, height: bounds.h, depthOrArrayLayers: 1 }
+			);
+		}
+	}
+
+	function extractRegion(source: Uint8Array, layout: RegionLayout, baseOffset: number) {
+		const tightly = new Uint8Array(layout.unpadded * layout.bounds.h);
+		for (let row = 0; row < layout.bounds.h; row++) {
+			const start = baseOffset + layout.offset + row * layout.bytesPerRow;
+			tightly.set(source.subarray(start, start + layout.unpadded), row * layout.unpadded);
+		}
+		return tightly;
+	}
+
+	/** Read several texture regions with one submission and one mapped staging buffer. */
+	async function readTextureRegions(texture: GPUTexture, regions: Rect[]) {
+		if (destroyed || regions.length === 0) return null;
+		const { layouts, totalSize } = layoutRegions(regions);
+		if (totalSize > device.limits.maxBufferSize) return null;
 		const staging = device.createBuffer({
-			size: bytesPerRow * h,
+			size: totalSize,
 			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
 		});
 		const encoder = device.createCommandEncoder();
-		encoder.copyTextureToBuffer(
-			{ texture: root.unwrap(texture), origin: [x0, y0, 0] },
-			{ buffer: staging, bytesPerRow },
-			[w, h, 1]
-		);
+		encodeRegionCopies(encoder, texture, staging, layouts, 0);
 		device.queue.submit([encoder.finish()]);
 		let mapped = false;
 		try {
 			await staging.mapAsync(GPUMapMode.READ);
 			mapped = true;
-			const source = new Uint8Array(staging.getMappedRange());
-			const tightly = new Uint8Array(w * h * 4);
-			for (let row = 0; row < h; row++) {
-				tightly.set(
-					source.subarray(row * bytesPerRow, row * bytesPerRow + unpadded),
-					row * unpadded
-				);
+			if (destroyed) return null;
+			const source = new Uint8Array(staging.getMappedRange(0, totalSize));
+			return layouts.map((layout) => extractRegion(source, layout, 0));
+		} catch (error) {
+			if (destroyed) return null;
+			throw error;
+		} finally {
+			if (mapped) staging.unmap();
+			staging.destroy();
+		}
+	}
+
+	async function readFullDocument() {
+		if (destroyed) return null;
+		const unpadded = docW * 4;
+		const bytesPerRow = Math.max(256, Math.ceil(unpadded / 256) * 256);
+		if (bytesPerRow * docH <= device.limits.maxBufferSize) {
+			const regions = await readTextureRegions(root.unwrap(docTex), [
+				{ x: 0, y: 0, w: docW, h: docH }
+			]);
+			return regions?.[0] ?? null;
+		}
+		const maxRows = Math.max(1, Math.floor(device.limits.maxBufferSize / bytesPerRow));
+		const bands: Array<{
+			y: number;
+			rows: number;
+			size: number;
+			staging: GPUBuffer;
+			mapped: boolean;
+		}> = [];
+		for (let y = 0; y < docH; y += maxRows) {
+			const rows = Math.min(maxRows, docH - y);
+			const size = bytesPerRow * rows;
+			bands.push({
+				y,
+				rows,
+				size,
+				staging: device.createBuffer({
+					size,
+					usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+				}),
+				mapped: false
+			});
+		}
+		const encoder = device.createCommandEncoder();
+		const texture = root.unwrap(docTex);
+		for (const band of bands) {
+			encoder.copyTextureToBuffer(
+				{ texture, origin: { x: 0, y: band.y, z: 0 } },
+				{ buffer: band.staging, bytesPerRow },
+				{ width: docW, height: band.rows, depthOrArrayLayers: 1 }
+			);
+		}
+		device.queue.submit([encoder.finish()]);
+		try {
+			await Promise.all(
+				bands.map(async (band) => {
+					await band.staging.mapAsync(GPUMapMode.READ);
+					band.mapped = true;
+				})
+			);
+			if (destroyed) return null;
+			const pixels = new Uint8Array(docW * docH * 4);
+			for (const band of bands) {
+				const source = new Uint8Array(band.staging.getMappedRange(0, band.size));
+				for (let row = 0; row < band.rows; row++) {
+					const start = row * bytesPerRow;
+					pixels.set(
+						source.subarray(start, start + unpadded),
+						(band.y + row) * unpadded
+					);
+				}
 			}
-			return tightly;
+			return pixels;
+		} catch (error) {
+			if (destroyed) return null;
+			throw error;
+		} finally {
+			for (const band of bands) {
+				if (band.mapped) band.staging.unmap();
+				band.staging.destroy();
+			}
+		}
+	}
+
+	async function mapRegionPatch(
+		staging: GPUBuffer,
+		layouts: RegionLayout[],
+		sideSize: number
+	): Promise<RasterHistoryEntry | null> {
+		let mapped = false;
+		try {
+			await staging.mapAsync(GPUMapMode.READ);
+			mapped = true;
+			if (destroyed) return null;
+			const source = new Uint8Array(staging.getMappedRange(0, sideSize * 2));
+			return layouts.map((layout) => ({
+				bounds: { ...layout.bounds },
+				before: extractRegion(source, layout, 0),
+				after: extractRegion(source, layout, sideSize)
+			}));
+		} catch (error) {
+			if (destroyed) return null;
+			throw error;
 		} finally {
 			if (mapped) staging.unmap();
 			staging.destroy();
@@ -603,7 +741,6 @@ export async function createGpuPaint(
 			if (nextW === docW && nextH === docH && cropX === 0 && cropY === 0) return false;
 
 			resetStrokeState();
-			undo.clear();
 			const oldW = docW;
 			const oldH = docH;
 
@@ -694,8 +831,8 @@ export async function createGpuPaint(
 			}
 		},
 
-		endStroke(opacity: number) {
-			if (destroyed) return;
+		endStroke(opacity: number): Promise<RasterHistoryEntry | null> {
+			if (destroyed) return Promise.resolve(null);
 
 			if (currentTool === 'lasso') {
 				stampCount = 0;
@@ -706,7 +843,7 @@ export async function createGpuPaint(
 				if (!final) {
 					resetStrokeState();
 					strokeNeedsClear = true;
-					return;
+					return Promise.resolve(null);
 				}
 				strokeBounds.expandRect(final);
 			} else if (isFanTool(currentTool)) {
@@ -718,20 +855,32 @@ export async function createGpuPaint(
 				if (!final) {
 					resetStrokeState();
 					strokeNeedsClear = true;
-					return;
+					return Promise.resolve(null);
 				}
 				strokeBounds.expandRect(final);
 			} else {
 				paintStampsToStroke(lastColor);
 			}
 
-			const bounds = strokeBounds.finalize(docW, docH);
-			if (bounds) {
-				const regions = strokeBounds.finalizeRegions(docW, docH);
+			const regions = strokeBounds.finalizeRegions(docW, docH);
+			const layout = regions.length > 0 ? layoutRegions(regions) : null;
+			let patch: Promise<RasterHistoryEntry | null> | null = null;
+			if (layout && layout.totalSize * 2 <= device.limits.maxBufferSize) {
+				// One submission captures both sides of the composite boundary: the
+				// before pixels, the stroke composite, then the after pixels.
+				const { layouts, totalSize } = layout;
+				const staging = device.createBuffer({
+					size: totalSize * 2,
+					usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+				});
 				const encoder = device.createCommandEncoder();
-				undo.capture(root.unwrap(docTex), bounds, encoder);
+				encodeRegionCopies(encoder, root.unwrap(docTex), staging, layouts, 0);
 				compositeStroke(opacity, regions, encoder);
+				encodeRegionCopies(encoder, root.unwrap(docTex), staging, layouts, totalSize);
 				device.queue.submit([encoder.finish()]);
+				patch = mapRegionPatch(staging, layouts, totalSize);
+			} else {
+				compositeStroke(opacity, regions);
 			}
 
 			strokeNeedsClear = true;
@@ -741,6 +890,7 @@ export async function createGpuPaint(
 			lasso.reset();
 			fan.reset();
 			strokeBounds.reset();
+			return patch ?? Promise.resolve(null);
 		},
 
 		cancelStroke() {
@@ -754,30 +904,51 @@ export async function createGpuPaint(
 			strokeBounds.reset();
 		},
 
-		undo() {
-			if (destroyed) return false;
-			return undo.undo(root.unwrap(docTex));
+		applyRasterPatch(bounds: Rect, pixels: Uint8Array) {
+			if (destroyed) return;
+			const x = bounds.x;
+			const y = bounds.y;
+			const w = bounds.w;
+			const h = bounds.h;
+			if (
+				!Number.isInteger(x) ||
+				!Number.isInteger(y) ||
+				!Number.isInteger(w) ||
+				!Number.isInteger(h) ||
+				w < 1 ||
+				h < 1 ||
+				x < 0 ||
+				y < 0 ||
+				x + w > docW ||
+				y + h > docH ||
+				pixels.byteLength !== w * h * 4
+			) {
+				return;
+			}
+			device.queue.writeTexture(
+				{ texture: root.unwrap(docTex), origin: { x, y, z: 0 } },
+				pixels,
+				{ bytesPerRow: w * 4, rowsPerImage: h },
+				{ width: w, height: h, depthOrArrayLayers: 1 }
+			);
 		},
 
-		redo() {
-			if (destroyed) return false;
-			return undo.redo(root.unwrap(docTex));
-		},
-
-		canUndo() {
-			return !destroyed && undo.canUndo();
-		},
-
-		canRedo() {
-			return !destroyed && undo.canRedo();
-		},
-
-		clearUndo() {
-			undo.clear();
+		readRegion(bounds: Rect) {
+			if (destroyed) return Promise.resolve(null);
+			const x0 = Math.max(0, Math.floor(bounds.x));
+			const y0 = Math.max(0, Math.floor(bounds.y));
+			const x1 = Math.min(docW, Math.ceil(bounds.x + bounds.w));
+			const y1 = Math.min(docH, Math.ceil(bounds.y + bounds.h));
+			const w = x1 - x0;
+			const h = y1 - y0;
+			if (w < 1 || h < 1) return Promise.resolve(null);
+			return readTextureRegions(root.unwrap(docTex), [{ x: x0, y: y0, w, h }]).then(
+				(regions) => regions?.[0] ?? null
+			);
 		},
 
 		readDocument() {
-			return readTexturePixels(docTex, 0, 0, docW, docH);
+			return readFullDocument();
 		},
 
 		addSample(
@@ -914,7 +1085,6 @@ export async function createGpuPaint(
 
 		destroy() {
 			destroyed = true;
-			undo.clear();
 			lasso.reset();
 			fan.reset();
 			lassoStencilTex.destroy();
