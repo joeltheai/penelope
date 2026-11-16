@@ -10,6 +10,16 @@
 		type LassoOptions
 	} from '$lib/gpuPaint';
 	import {
+		EMPTY_HISTORY_STATE,
+		PersistentHistory,
+		type HistoryApi,
+		type HistoryGraphData,
+		type HistorySnapshot,
+		type HistoryUiState
+	} from '$lib/historyStore';
+	import { HistoryReplaySession, renderHistorySnapshots } from '$lib/historyPreview';
+	import { downloadTimelapse, renderTimelapse } from '$lib/timelapse';
+	import {
 		fitDocumentZoom,
 		placeDocAtScreen as placeDocAtScreenCam,
 		screenToDoc as screenToDocCamMath,
@@ -40,12 +50,15 @@
 		canUndo = $bindable(false),
 		canRedo = $bindable(false),
 		editApi = $bindable(null as null | EditApi),
+		historyApi = $bindable(null as null | HistoryApi),
+		historyState = $bindable({ ...EMPTY_HISTORY_STATE } as HistoryUiState),
 		docW = $bindable(2000),
 		docH = $bindable(2000),
 		zoom = $bindable(1),
 		eyedropper = $bindable(false),
 		resizeMode = $bindable(false),
-		mirrorView = $bindable(false)
+		mirrorView = $bindable(false),
+		suspended = $bindable(false)
 	}: {
 		color?: string;
 		brushSettings?: BrushSettings;
@@ -54,16 +67,20 @@
 		canUndo?: boolean;
 		canRedo?: boolean;
 		editApi?: null | EditApi;
+		historyApi?: null | HistoryApi;
+		historyState?: HistoryUiState;
 		docW?: number;
 		docH?: number;
 		zoom?: number;
 		eyedropper?: boolean;
 		resizeMode?: boolean;
 		mirrorView?: boolean;
+		suspended?: boolean;
 	} = $props();
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let gpuError = $state<string | null>(null);
+	let booting = $state(true);
 
 	let space = $state(false);
 	let alt = false;
@@ -85,61 +102,42 @@
 	let cropW = $state(2000);
 	let cropH = $state(2000);
 
-	let docPixels: Uint8Array | null = null;
-	let docPixelsRequest: Promise<Uint8Array | null> | null = null;
-
 	let enterResizeImpl: (() => void) | null = null;
 	let applyResizeImpl: (() => void) | null = null;
 	let resizeZoomImpl: ((sx: number, sy: number, factor: number) => void) | null = null;
 	let resizePanImpl: ((dx: number, dy: number) => void) | null = null;
 	let presentImpl: (() => void) | null = null;
 
-	function invalidateDocPixels() {
-		docPixels = null;
-		docPixelsRequest = null;
-	}
-
-	function ensureDocPixels() {
-		if (docPixels) return Promise.resolve(docPixels);
-		if (!docPixelsRequest) {
-			const gpu = gpuRef;
-			if (!gpu) return Promise.resolve(null);
-			docPixelsRequest = gpu.readDocument().then((pixels) => {
-				if (pixels) docPixels = pixels;
-				docPixelsRequest = null;
-				return pixels;
-			});
-		}
-		return docPixelsRequest;
-	}
-
 	async function sampleLoupe(sx: number, sy: number) {
 		if (!gpuRef || !screenToDocRef) return null;
 		const gpu = gpuRef;
 		const p = screenToDocRef(sx, sy);
-		const pixels = await ensureDocPixels();
-		if (!pixels || !gpuRef) return null;
-
 		const radius = 11;
 		const full = radius * 2 + 1;
 		const cx = Math.floor(p.x);
 		const cy = Math.floor(p.y);
+		const x0 = cx - radius;
+		const y0 = cy - radius;
+		const readX = Math.max(0, x0);
+		const readY = Math.max(0, y0);
+		const readW = Math.min(full, gpu.docW - readX, x0 + full - readX);
+		const readH = Math.min(full, gpu.docH - readY, y0 + full - readY);
+
 		const out = new Uint8ClampedArray(full * full * 4);
 		out.fill(255);
-		for (let row = 0; row < full; row++) {
-			const dy = cy - radius + row;
-			if (dy < 0 || dy >= gpu.docH) continue;
-			for (let col = 0; col < full; col++) {
-				const dx = cx - radius + col;
-				if (dx < 0 || dx >= gpu.docW) continue;
-				const src = (dy * gpu.docW + dx) * 4;
-				const dst = (row * full + col) * 4;
-				out[dst] = pixels[src]!;
-				out[dst + 1] = pixels[src + 1]!;
-				out[dst + 2] = pixels[src + 2]!;
-				out[dst + 3] = 255;
+		if (readW > 0 && readH > 0) {
+			const region = await gpu.readRegion({ x: readX, y: readY, w: readW, h: readH });
+			if (region && gpuRef) {
+				const offsetX = readX - x0;
+				const offsetY = readY - y0;
+				for (let row = 0; row < readH; row++) {
+					const src = row * readW * 4;
+					const dst = ((offsetY + row) * full + offsetX) * 4;
+					out.set(region.subarray(src, src + readW * 4), dst);
+				}
 			}
 		}
+
 		const i = (radius * full + radius) * 4;
 		const hex = `#${[out[i], out[i + 1], out[i + 2]]
 			.map((n) => n!.toString(16).padStart(2, '0'))
@@ -178,6 +176,7 @@
 	}
 
 	function onKeyDown(e: KeyboardEvent) {
+		if (suspended) return;
 		if (e.code === 'Escape' && resizeMode) {
 			cancelResizeMode();
 			return;
@@ -233,6 +232,17 @@
 
 		let cancelled = false;
 		let gpu: GpuPaint | null = null;
+		let history: PersistentHistory | null = null;
+		let historyQueue: Promise<void> = Promise.resolve();
+		let historyBusy = false;
+		let historyOperationBusy = false;
+		let pendingHistoryWrites = 0;
+		let replaying = false;
+		let previewAbort: AbortController | null = null;
+		let replaySession: HistoryReplaySession | null = null;
+		let replayQueue: Promise<unknown> = Promise.resolve();
+		let exportProgress: number | null = null;
+		let historyError: string | null = null;
 
 		const view = { x: 0, y: 0, zoom: 1, rotation: 0, flipX: 1 };
 		let cssW = 0;
@@ -249,6 +259,7 @@
 		let rotatePivot = { x: 0, y: 0 };
 		let lastRotateAngle: number | null = null;
 		const penState = createPenPressureState();
+		let lastPenContactAt = -Infinity;
 		let lastPaintScreen: { x: number; y: number } | null = null;
 		let lastAirbrush: {
 			x: number;
@@ -358,6 +369,7 @@
 		function finishMultiTap() {
 			const tap = multiTap;
 			multiTap = null;
+			if (suspended) return;
 			if (!tap || !tap.eligible || tap.moved) return;
 			if (performance.now() - tap.startTime > TAP_MAX_MS) return;
 			if (tap.maxFingers === 2) runUndo();
@@ -450,30 +462,220 @@
 			}
 		}
 
-		function syncUndoFlags() {
-			if (!gpu) {
+		function syncHistoryFlags() {
+			if (!history) {
 				canUndo = false;
 				canRedo = false;
+				historyState = { ...EMPTY_HISTORY_STATE };
 				return;
 			}
-			canUndo = gpu.canUndo();
-			canRedo = gpu.canRedo();
+			const next = history.getState();
+			historyState = {
+				...next,
+				busy: historyBusy,
+				replaying,
+				exportProgress,
+				error: historyError
+			};
+			canUndo = !historyBusy && next.canUndo;
+			canRedo = !historyBusy && next.canRedo;
+		}
+
+		function refreshHistoryBusy() {
+			historyBusy = historyOperationBusy || pendingHistoryWrites > 0;
+		}
+
+		async function runHistoryOperation(operation: () => Promise<void>) {
+			if (resizeMode || !gpu || !history || drawing || strokeActive || historyOperationBusy) {
+				return;
+			}
+			historyOperationBusy = true;
+			refreshHistoryBusy();
+			historyError = null;
+			syncHistoryFlags();
+			try {
+				// Wait for any stroke patch that is still being read back or written.
+				// Those writes are ordered ahead of this operation and cannot conflict.
+				await historyQueue;
+				await operation();
+				present();
+			} catch (error) {
+				historyError = error instanceof Error ? error.message : 'History operation failed';
+				present();
+			} finally {
+				historyOperationBusy = false;
+				refreshHistoryBusy();
+				syncHistoryFlags();
+			}
+		}
+
+		function applyStoredPatch(
+			bounds: { x: number; y: number; w: number; h: number },
+			pixels: Uint8Array
+		) {
+			gpu?.applyRasterPatch(bounds, pixels);
 		}
 
 		function runUndo() {
-			if (!gpu || drawing || strokeActive || resizeMode) return;
-			if (!gpu.undo()) return;
-			invalidateDocPixels();
-			syncUndoFlags();
-			present();
+			return runHistoryOperation(async () => {
+				await history?.undo(applyStoredPatch);
+			});
 		}
 
 		function runRedo() {
-			if (!gpu || drawing || strokeActive || resizeMode) return;
-			if (!gpu.redo()) return;
-			invalidateDocPixels();
-			syncUndoFlags();
-			present();
+			return runHistoryOperation(async () => {
+				await history?.redo(applyStoredPatch);
+			});
+		}
+
+		function seekHistory(index: number) {
+			return runHistoryOperation(async () => {
+				await history?.seekIndex(index, applyStoredPatch);
+			});
+		}
+
+		function forkHistory() {
+			return runHistoryOperation(async () => {
+				await history?.fork();
+			});
+		}
+
+		function switchHistoryBranch(branchId: string) {
+			return runHistoryOperation(async () => {
+				await history?.switchBranch(branchId, applyStoredPatch);
+			});
+		}
+
+		function renameHistoryBranch(branchId: string, name: string) {
+			return runHistoryOperation(async () => {
+				await history?.renameBranch(branchId, name);
+			});
+		}
+
+		function deleteHistoryBranch(branchId: string) {
+			return runHistoryOperation(async () => {
+				await history?.deleteBranch(branchId, applyStoredPatch);
+			});
+		}
+
+		function resetHistoryProject() {
+			return runHistoryOperation(async () => {
+				if (!history || !gpu) throw new Error('History is not ready');
+				closeReplay();
+				const pixels = new Uint8Array(gpu.docW * gpu.docH * 4).fill(255);
+				await history.reset(gpu.docW, gpu.docH, pixels);
+				gpu.applyRasterPatch({ x: 0, y: 0, w: gpu.docW, h: gpu.docH }, pixels);
+			});
+		}
+
+		function pauseReplay() {
+			previewAbort?.abort();
+			previewAbort = null;
+			replaying = false;
+			syncHistoryFlags();
+		}
+
+		function closeReplay() {
+			pauseReplay();
+			replaySession = null;
+			replayQueue = Promise.resolve();
+		}
+
+		async function getHistoryGraph(): Promise<HistoryGraphData> {
+			await historyQueue;
+			if (!history) throw new Error('History is not ready');
+			return history.getGraphData();
+		}
+
+		async function getHistorySnapshots(nodeIds: Array<string | null>): Promise<HistorySnapshot[]> {
+			await historyQueue;
+			if (!history) throw new Error('History is not ready');
+			return renderHistorySnapshots(history, history.getGraphData(), nodeIds);
+		}
+
+		async function openHistoryReplay(branchId: string, canvas: HTMLCanvasElement) {
+			if (!history) throw new Error('History is not ready');
+			closeReplay();
+			await historyQueue;
+			replaySession = new HistoryReplaySession(history, branchId, canvas);
+			return { index: replaySession.index, total: replaySession.total };
+		}
+
+		async function seekHistoryReplay(index: number) {
+			pauseReplay();
+			const session = replaySession;
+			if (!session) throw new Error('Replay is not open');
+			const operation = replayQueue.catch(() => undefined).then(() => session.seek(index));
+			replayQueue = operation;
+			return operation;
+		}
+
+		async function playHistoryReplay(options: {
+			fps: number;
+			onFrame?: (index: number) => void;
+		}) {
+			const session = replaySession;
+			if (!session) throw new Error('Replay is not open');
+			pauseReplay();
+			const controller = new AbortController();
+			previewAbort = controller;
+			replaying = true;
+			historyError = null;
+			syncHistoryFlags();
+			const operation = replayQueue.catch(() => undefined).then(async () => {
+				if (session.index >= session.total) {
+					await session.seek(0, controller.signal);
+					options.onFrame?.(0);
+				}
+				await session.play({
+					...options,
+					signal: controller.signal
+				});
+			});
+			replayQueue = operation;
+			try {
+				await operation;
+			} catch (error) {
+				if (controller.signal.aborted) return;
+				historyError = error instanceof Error ? error.message : 'Replay failed';
+			} finally {
+				if (previewAbort === controller) {
+					previewAbort = null;
+					replaying = false;
+					syncHistoryFlags();
+				}
+			}
+		}
+
+		async function exportHistoryVideo(options: {
+			fps: number;
+			maxDimension: 720 | 1280 | 1920;
+			branchId?: string;
+		}) {
+			if (!history || historyBusy || drawing || strokeActive) return;
+			historyOperationBusy = true;
+			refreshHistoryBusy();
+			exportProgress = 0;
+			historyError = null;
+			syncHistoryFlags();
+			try {
+				await historyQueue;
+				const blob = await renderTimelapse(history, {
+					...options,
+					onProgress(progress) {
+						exportProgress = progress;
+						syncHistoryFlags();
+					}
+				});
+				downloadTimelapse(blob);
+			} catch (error) {
+				historyError = error instanceof Error ? error.message : 'Timelapse export failed';
+			} finally {
+				historyOperationBusy = false;
+				refreshHistoryBusy();
+				exportProgress = null;
+				syncHistoryFlags();
+			}
 		}
 
 		function beginResizeMode() {
@@ -495,23 +697,38 @@
 		}
 
 		async function commitResizeMode() {
-			if (!gpu || drawing || strokeActive) return;
-			const nextW = sanitizeDocSize(cropW);
-			const nextH = sanitizeDocSize(cropH);
-			const changed = await gpu.resizeDocument(nextW, nextH, {
-				cropX: Math.round(cropX),
-				cropY: Math.round(cropY)
-			});
-			if (!gpu) return;
-			docW = gpu.docW;
-			docH = gpu.docH;
-			resizeMode = false;
-			if (changed) {
-				invalidateDocPixels();
-				syncUndoFlags();
-				fitDocumentToScreen();
+			if (!gpu || !history || drawing || strokeActive || historyBusy) return;
+			historyOperationBusy = true;
+			refreshHistoryBusy();
+			historyError = null;
+			syncHistoryFlags();
+			try {
+				await historyQueue;
+				const nextW = sanitizeDocSize(cropW);
+				const nextH = sanitizeDocSize(cropH);
+				const changed = await gpu.resizeDocument(nextW, nextH, {
+					cropX: Math.round(cropX),
+					cropY: Math.round(cropY)
+				});
+				if (!gpu || cancelled) return;
+				docW = gpu.docW;
+				docH = gpu.docH;
+				resizeMode = false;
+				if (changed) {
+					// A resize changes the coordinate space, so the stored history can no
+					// longer describe it: read the result back as the new baseline.
+					const baseline = await gpu.readDocument();
+					if (baseline) await history.reset(gpu.docW, gpu.docH, baseline);
+					fitDocumentToScreen();
+				}
+				present();
+			} catch (error) {
+				historyError = error instanceof Error ? error.message : 'Canvas resize failed';
+			} finally {
+				historyOperationBusy = false;
+				refreshHistoryBusy();
+				syncHistoryFlags();
 			}
-			present();
 		}
 
 		enterResizeImpl = beginResizeMode;
@@ -538,13 +755,29 @@
 		function endStroke() {
 			if (!strokeActive || !gpu) return;
 			stopAirbrushTimer();
-			gpu.endStroke(brushSettings.opacity);
+			const patchPromise = gpu.endStroke(brushSettings.opacity);
 			strokeActive = false;
 			lastAirbrush = null;
 			lastDocPoint = null;
 			smoothPoint = null;
-			invalidateDocPixels();
-			syncUndoFlags();
+			pendingHistoryWrites++;
+			refreshHistoryBusy();
+			syncHistoryFlags();
+			historyQueue = historyQueue
+				.then(async () => {
+					const patch = await patchPromise;
+					if (!cancelled && patch && history) await history.append(patch);
+					syncHistoryFlags();
+				})
+				.catch((error) => {
+					historyError = error instanceof Error ? error.message : 'Could not save stroke history';
+					syncHistoryFlags();
+				})
+				.finally(() => {
+					pendingHistoryWrites = Math.max(0, pendingHistoryWrites - 1);
+					refreshHistoryBusy();
+					syncHistoryFlags();
+				});
 			schedulePresent();
 		}
 
@@ -582,8 +815,11 @@
 		}
 
 		function resize() {
-			cssW = surface.clientWidth;
-			cssH = surface.clientHeight;
+			const nextW = surface.clientWidth;
+			const nextH = surface.clientHeight;
+			if (nextW === cssW && nextH === cssH) return;
+			cssW = nextW;
+			cssH = nextH;
 			gpu?.resize(cssW, cssH);
 			if (gpu && !fittedOnce && cssW > 0 && cssH > 0) {
 				fitDocumentToScreen();
@@ -660,10 +896,13 @@
 		}
 
 		function onPointerDown(e: PointerEvent) {
-			if (resizeMode) return;
+			if (suspended || resizeMode || historyOperationBusy) return;
 			e.preventDefault();
 			const active = document.activeElement;
-			if (active instanceof HTMLElement && active !== surface) active.blur();
+			if (active instanceof HTMLElement && active !== surface && isEditableTarget(active)) {
+				active.blur();
+			}
+			if (e.pointerType === 'pen') lastPenContactAt = performance.now();
 
 			if (e.pointerType === 'touch') {
 				touches[e.pointerId] = { x: e.clientX, y: e.clientY };
@@ -693,6 +932,14 @@
 			lastY = e.clientY;
 
 			if (touchCount() >= 2) return;
+
+			if (e.pointerType === 'touch') {
+				// Pen wins over touch: a palm or a stray finger must not ink while the
+				// Pencil is in use, and wide contacts are palms rather than fingertips.
+				const recentPen = performance.now() - lastPenContactAt < 700;
+				const contactSize = Math.max(e.width || 0, e.height || 0);
+				if (recentPen || contactSize > 56) return;
+			}
 
 			if (wantsRotate(e)) {
 				rotating = true;
@@ -724,6 +971,7 @@
 		}
 
 		function onPointerMove(e: PointerEvent) {
+			if (e.pointerType === 'pen') lastPenContactAt = performance.now();
 			if (e.pointerType === 'touch' && touches[e.pointerId]) {
 				touches[e.pointerId] = { x: e.clientX, y: e.clientY };
 				updateMultiTapMoved();
@@ -786,6 +1034,7 @@
 		}
 
 		function onPointerUp(e: PointerEvent) {
+			if (e.pointerType === 'pen') lastPenContactAt = performance.now();
 			delete touches[e.pointerId];
 			if (touchCount() < 2) pinch = null;
 			if (touchCount() === 0) finishMultiTap();
@@ -855,16 +1104,22 @@
 		window.addEventListener('resize', resize);
 
 		(async () => {
+			let storedHistory: PersistentHistory | null = null;
 			try {
 				const initial = untrack(() => ({ width: docW, height: docH }));
+				storedHistory = await PersistentHistory.open(initial.width, initial.height);
+				const restoredPixels = await storedHistory.materialize();
 				const painter = await createGpuPaint(surface, {
-					width: initial.width,
-					height: initial.height
+					width: storedHistory.width,
+					height: storedHistory.height,
+					pixels: restoredPixels
 				});
 				if (cancelled) {
 					painter.destroy();
+					storedHistory.close();
 					return;
 				}
+				history = storedHistory;
 				gpu = painter;
 				gpuRef = painter;
 				screenToDocRef = screenToDoc;
@@ -877,23 +1132,48 @@
 				undoFn = runUndo;
 				redoFn = runRedo;
 				editApi = { undo: runUndo, redo: runRedo };
-				syncUndoFlags();
+				historyApi = {
+					undo: runUndo,
+					redo: runRedo,
+					seek: seekHistory,
+					fork: forkHistory,
+					switchBranch: switchHistoryBranch,
+					renameBranch: renameHistoryBranch,
+					deleteBranch: deleteHistoryBranch,
+					resetProject: resetHistoryProject,
+					getGraph: getHistoryGraph,
+					getSnapshots: getHistorySnapshots,
+					openReplay: openHistoryReplay,
+					seekReplay: seekHistoryReplay,
+					playReplay: playHistoryReplay,
+					pauseReplay,
+					closeReplay,
+					exportVideo: exportHistoryVideo
+				};
+				syncHistoryFlags();
+				void navigator.storage?.persist?.();
 				ro.observe(surface);
 				resize();
 				if (untrack(() => resizeMode)) beginResizeMode();
 			} catch (err) {
+				if (storedHistory && storedHistory !== history) storedHistory.close();
 				if (cancelled) return;
 				gpuError = err instanceof Error ? err.message : 'WebGPU failed to initialize';
+			} finally {
+				if (!cancelled) booting = false;
 			}
 		})();
 
 		return () => {
 			cancelled = true;
+			closeReplay();
 			stopAirbrushTimer();
 			if (presentRaf) cancelAnimationFrame(presentRaf);
 			undoFn = null;
 			redoFn = null;
 			editApi = null;
+			historyApi = null;
+			historyState = { ...EMPTY_HISTORY_STATE };
 			enterResizeImpl = null;
 			applyResizeImpl = null;
 			presentImpl = null;
@@ -902,10 +1182,11 @@
 			canUndo = false;
 			canRedo = false;
 			zoom = 1;
-			invalidateDocPixels();
 			ro.disconnect();
 			gpu?.destroy();
 			gpu = null;
+			history?.close();
+			history = null;
 			gpuRef = null;
 			screenToDocRef = null;
 			surface.removeEventListener('pointerdown', onPointerDown);
@@ -928,6 +1209,17 @@
 	class="fixed inset-0 block h-full w-full touch-none select-none [-webkit-touch-callout:none]"
 	style:background="#1c1c1d"
 ></canvas>
+
+{#if booting && !gpuError}
+	<div class="pointer-events-none fixed inset-0 z-40 grid place-items-center">
+		<div
+			class="rounded-md border border-white/10 bg-[#1a191d] px-3 py-2 text-[11px] tracking-[0.08em] text-white/55 uppercase shadow-[0_12px_32px_rgba(0,0,0,0.4)]"
+			role="status"
+		>
+			Preparing canvas
+		</div>
+	</div>
+{/if}
 
 {#if resizeMode}
 	<ResizeCanvasOverlay
