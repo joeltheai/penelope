@@ -58,14 +58,13 @@
 		color: var(--pl-dim);
 		touch-action: manipulation;
 		transition:
-			transform 120ms var(--pl-ease),
 			color 120ms var(--pl-ease),
 			background 120ms var(--pl-ease),
 			border-color 120ms var(--pl-ease);
 	}
 
 	.tb--captioned {
-		width: 66px;
+		width: 64px;
 		height: 56px;
 		display: flex;
 		flex-direction: column;
@@ -73,23 +72,16 @@
 	}
 
 	.tb-caption {
-		font-size: 8px;
-		font-weight: 700;
-		letter-spacing: 0.14em;
+		font-size: 10px;
+		font-weight: 500;
 		line-height: 1;
-		text-transform: uppercase;
 	}
 
 	@media (hover: hover) {
 		.tb:hover:not(:disabled) {
 			background: var(--pl-hover);
-			border-color: var(--pl-line-strong);
 			color: var(--pl-ink);
 		}
-	}
-
-	.tb:active:not(:disabled) {
-		transform: translateY(1px);
 	}
 
 	.tb:disabled {
@@ -98,15 +90,8 @@
 
 	.tb--on,
 	.tb--on:hover:not(:disabled) {
-		background: var(--pl-accent);
-		border-color: #b7fbff;
-		color: #041016;
-		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.6),
-			inset 0 -1px 0 rgba(0, 0, 0, 0.25);
-	}
-
-	.tb--on :global(svg) {
-		filter: none;
+		background: var(--pl-accent-soft);
+		border-color: var(--pl-accent);
+		color: var(--pl-accent);
 	}
 </style>

@@ -44,17 +44,12 @@
 	}
 
 	.sw-label {
-		font-size: 9px;
-		font-weight: 700;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
+		font-size: 12px;
+		font-weight: 500;
 		color: var(--pl-dim);
 	}
 
 	@media (hover: hover) {
-		.sw:hover:not(:disabled) {
-			background: var(--pl-hover);
-		}
 		.sw:hover:not(:disabled) .sw-label {
 			color: var(--pl-ink);
 		}
@@ -69,42 +64,32 @@
 		flex: none;
 		width: 40px;
 		height: 22px;
-		border-radius: var(--pl-radius-sm);
-		background: var(--pl-sunken-bg);
+		border-radius: 11px;
+		background: var(--pl-sunken);
 		border: 1px solid var(--pl-line-strong);
-		box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.75);
 	}
 
 	.sw-knob {
 		position: absolute;
-		top: 1px;
-		left: 1px;
-		width: 18px;
-		height: 18px;
-		border-radius: 2px;
-		background: linear-gradient(180deg, #8b84ab, #4a4366);
-		border: 1px solid #b0a8cc;
-		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.35),
-			0 1px 2px rgba(0, 0, 0, 0.7);
+		top: 2px;
+		left: 2px;
+		width: 16px;
+		height: 16px;
+		border-radius: 50%;
+		background: var(--pl-dim);
 		transition:
 			transform 140ms var(--pl-ease),
-			background 140ms var(--pl-ease),
-			border-color 140ms var(--pl-ease);
+			background 140ms var(--pl-ease);
 	}
 
 	.sw--on .sw-track {
-		border-color: rgba(94, 242, 255, 0.5);
-		background: linear-gradient(180deg, rgba(94, 242, 255, 0.24), #071014);
+		border-color: var(--pl-accent);
+		background: var(--pl-accent-soft);
 	}
 
 	.sw--on .sw-knob {
-		transform: translateX(19px);
-		background: linear-gradient(180deg, #ffffff, #c9faff);
-		border-color: #ffffff;
-		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.8),
-			0 0 8px rgba(94, 242, 255, 0.5);
+		transform: translateX(18px);
+		background: var(--pl-accent);
 	}
 
 	.sw:disabled {

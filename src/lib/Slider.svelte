@@ -79,10 +79,8 @@
 	}
 
 	.label {
-		font-size: 9px;
-		font-weight: 700;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
+		font-size: 11px;
+		font-weight: 500;
 		color: var(--pl-dim);
 		white-space: nowrap;
 		overflow: hidden;
@@ -90,8 +88,7 @@
 	}
 
 	.value {
-		font-size: 10px;
-		letter-spacing: 0.04em;
+		font-size: 11px;
 		color: var(--pl-ink);
 		flex: none;
 	}
@@ -113,48 +110,38 @@
 
 	.input::-webkit-slider-runnable-track {
 		height: 4px;
-		border-radius: 1px;
-		background:
-			linear-gradient(90deg, #2fb9cc, var(--pl-accent)) 0 / var(--fill) 100% no-repeat,
-			rgba(255, 255, 255, 0.08);
-		box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.8);
+		border-radius: 2px;
+		background: var(--pl-line-strong);
 	}
 
 	.input::-webkit-slider-thumb {
 		appearance: none;
 		-webkit-appearance: none;
-		width: 12px;
-		height: 20px;
-		margin-top: -8px;
-		border-radius: 2px;
-		background: linear-gradient(180deg, #423a5d, #191528);
-		border: 1px solid #5d5282;
-		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.25),
-			0 1px 2px rgba(0, 0, 0, 0.8);
+		width: 14px;
+		height: 14px;
+		margin-top: -5px;
+		border-radius: 50%;
+		background: var(--pl-ink);
+		border: 0;
 	}
 
 	.input::-moz-range-track {
 		height: 4px;
-		border-radius: 1px;
-		background: rgba(255, 255, 255, 0.08);
-		box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.8);
+		border-radius: 2px;
+		background: var(--pl-line-strong);
 	}
 
 	.input::-moz-range-progress {
 		height: 4px;
-		border-radius: 1px;
-		background: linear-gradient(90deg, #2fb9cc, var(--pl-accent));
+		border-radius: 2px;
+		background: var(--pl-line-strong);
 	}
 
 	.input::-moz-range-thumb {
-		width: 12px;
-		height: 20px;
-		border-radius: 2px;
-		background: linear-gradient(180deg, #423a5d, #191528);
-		border: 1px solid #5d5282;
-		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.25),
-			0 1px 2px rgba(0, 0, 0, 0.8);
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: var(--pl-ink);
+		border: 0;
 	}
 </style>

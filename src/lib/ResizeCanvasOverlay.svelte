@@ -280,17 +280,10 @@
 	.btn {
 		height: 40px;
 		padding: 0 14px;
-		border-radius: 2px;
-		font-size: 9px;
-		font-weight: 700;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
+		border-radius: 6px;
+		font-size: 12px;
 		color: var(--pl-dim);
 		transition: background 120ms var(--pl-ease);
-	}
-
-	.btn:active {
-		transform: translateY(1px);
 	}
 
 	@media (hover: hover) {
@@ -303,7 +296,6 @@
 	.btn--primary,
 	.btn--primary:hover {
 		background: var(--pl-accent);
-		color: #041016;
-		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+		color: #0d0d0f;
 	}
 </style>

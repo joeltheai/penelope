@@ -1,51 +1,43 @@
 @layer ui-sdk;
 @import 'tailwindcss';
 @import '@ui-sdk/core/web.css' layer(components);
+@import 'allo-font/allo.css';
 
 :root {
-	/* NT-2000: a hardware control surface, not glass. Opaque panels, hard bevels,
-	   one lit accent. Magenta is reserved for live/recording states. */
-	--pl-bg: #05040b;
-	--pl-dock: #0b0913;
-	--pl-panel: #0f0d19;
-	--pl-raised: #171426;
-	--pl-sunken: #06050d;
-	--pl-hover: #1b1730;
-	--pl-line: #29243c;
-	--pl-line-strong: #423b5e;
-	--pl-ink: #edf3fa;
-	--pl-dim: #a6b4c9;
-	--pl-faint: #6a778d;
-	--pl-accent: #5ef2ff;
-	--pl-accent-soft: rgba(94, 242, 255, 0.12);
-	--pl-live: #ff3d9a;
-	--pl-ok: #b9ff66;
-	--pl-danger: #ff5d7a;
-	--pl-radius: 4px;
-	--pl-radius-sm: 3px;
+	/* Flat, quiet surfaces. One accent, used only for the current state. */
+	--pl-bg: #0d0d0f;
+	--pl-dock: #141416;
+	--pl-panel: #19191c;
+	--pl-raised: #212125;
+	--pl-sunken: #101012;
+	--pl-hover: #242429;
+	--pl-line: #27272c;
+	--pl-line-strong: #3a3a41;
+	--pl-ink: #f0f0f2;
+	--pl-dim: #a4a4ad;
+	--pl-faint: #74747e;
+	--pl-accent: #7aa2ff;
+	--pl-accent-soft: rgba(122, 162, 255, 0.14);
+	--pl-live: #ff6aa9;
+	--pl-ok: #93d97b;
+	--pl-danger: #ff7b8c;
+	--pl-radius: 8px;
+	--pl-radius-sm: 6px;
 	--pl-tap: 44px;
 	--pl-shadow: none;
 	--pl-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
-	--pl-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
-	--pl-display:
-		'Avenir Next', 'Futura', 'Century Gothic', 'Segoe UI', system-ui, sans-serif;
+	--pl-mono: 'Allo', ui-monospace, 'SF Mono', Menlo, monospace;
+	--pl-display: 'Allo', system-ui, -apple-system, 'Segoe UI', sans-serif;
 	--pl-bar: 56px;
 	--pl-tools: 88px;
-	--pl-props: 288px;
+	--pl-props: 272px;
 	--pl-gutter: 12px;
-	--pl-top-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-	--pl-bevel:
-		inset 1px 1px 0 rgba(255, 255, 255, 0.06), inset -1px -1px 0 rgba(0, 0, 0, 0.55);
 
-	--pl-panel-bg: linear-gradient(180deg, #14111f 0%, #0a0812 100%);
-	--pl-metal:
-		repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.014) 0 1px, transparent 1px 3px),
-		linear-gradient(180deg, #16131f 0%, #0b0912 100%);
-	--pl-head-bg:
-		repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.026) 0 1px, transparent 1px 3px),
-		linear-gradient(180deg, #1a172b, #0f0d1a);
-	--pl-sunken-bg: linear-gradient(180deg, #05040a, #0b0914);
+	--pl-panel-bg: var(--pl-panel);
+	--pl-metal: var(--pl-dock);
+	--pl-head-bg: var(--pl-dock);
+	--pl-sunken-bg: var(--pl-sunken);
 
 	color-scheme: dark;
 }
@@ -99,7 +91,7 @@ svg {
 }
 
 ::selection {
-	background: rgba(94, 242, 255, 0.25);
+	background: var(--pl-accent-soft);
 	color: #ffffff;
 }
 
@@ -110,27 +102,8 @@ svg {
 }
 
 .pl-caps {
-	font-size: 10px;
-	font-weight: 700;
-	letter-spacing: 0.14em;
-	text-transform: uppercase;
-}
-
-/* Lit indicator lamp. */
-.pl-led {
-	width: 6px;
-	height: 6px;
-	flex: none;
-	border-radius: 50%;
-	background: var(--pl-accent);
-	box-shadow:
-		0 0 6px rgba(94, 242, 255, 0.9),
-		inset 0 1px 0 rgba(255, 255, 255, 0.6);
-}
-
-.pl-led--off {
-	background: #2a2440;
-	box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.8);
+	font-size: 11px;
+	font-weight: 600;
 }
 
 .pl-sr {

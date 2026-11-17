@@ -264,17 +264,17 @@
 	.picker {
 		width: 252px;
 		max-height: min(60vh, 380px);
-		padding: 10px;
+		padding: 12px;
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
 		overflow-y: auto;
 		overscroll-behavior: contain;
 		touch-action: pan-y;
-		background: var(--pl-dock);
+		background: var(--pl-panel);
 		border: 1px solid var(--pl-line-strong);
-		border-radius: var(--pl-radius-sm);
-		box-shadow: 0 14px 34px rgba(0, 0, 0, 0.65);
+		border-radius: var(--pl-radius);
+		box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 	}
 
 	.head {
@@ -287,22 +287,20 @@
 		width: 30px;
 		height: 30px;
 		flex: none;
-		border-radius: 2px;
-		border: 1px solid rgba(255, 255, 255, 0.7);
-		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.8);
+		border-radius: 6px;
+		border: 1px solid rgba(255, 255, 255, 0.14);
 	}
 
 	.hex {
 		flex: 1;
 		min-width: 0;
 		height: 36px;
-		padding: 0 8px;
-		font-size: 10px;
-		letter-spacing: 0.08em;
+		padding: 0 10px;
+		font-size: 12px;
 		color: var(--pl-ink);
-		background: var(--pl-sunken-bg);
+		background: var(--pl-sunken);
 		border: 1px solid var(--pl-line);
-		border-radius: 2px;
+		border-radius: 6px;
 		text-transform: uppercase;
 		-webkit-user-select: text;
 		user-select: text;
@@ -320,23 +318,16 @@
 		width: 36px;
 		height: 36px;
 		flex: none;
-		border: 1px solid transparent;
-		border-radius: 2px;
+		border-radius: var(--pl-radius-sm);
 		color: var(--pl-dim);
 		transition:
 			background 120ms var(--pl-ease),
-			border-color 120ms var(--pl-ease),
 			color 120ms var(--pl-ease);
-	}
-
-	.icon-btn:active {
-		transform: translateY(1px);
 	}
 
 	@media (hover: hover) {
 		.icon-btn:hover {
 			background: var(--pl-hover);
-			border-color: var(--pl-line);
 			color: var(--pl-ink);
 		}
 	}
@@ -344,7 +335,6 @@
 	.icon-btn--on {
 		background: var(--pl-accent-soft);
 		color: var(--pl-accent);
-		border-color: rgba(94, 242, 255, 0.4);
 	}
 
 	.model {

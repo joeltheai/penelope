@@ -36,24 +36,21 @@
 	.seg {
 		display: flex;
 		width: 100%;
-		height: 40px;
-		padding: 2px;
-		gap: 2px;
-		background: var(--pl-sunken-bg);
+		height: 38px;
+		padding: 3px;
+		gap: 3px;
+		background: var(--pl-sunken);
 		border: 1px solid var(--pl-line);
-		border-radius: var(--pl-radius-sm);
-		box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.7);
+		border-radius: var(--pl-radius);
 	}
 
 	.seg-btn {
 		flex: 1;
 		min-width: 0;
-		border-radius: 2px;
+		border-radius: 5px;
 		color: var(--pl-dim);
-		font-size: 9px;
-		font-weight: 700;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
+		font-size: 12px;
+		font-weight: 500;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -64,22 +61,14 @@
 
 	@media (hover: hover) {
 		.seg-btn:hover:not(:disabled) {
-			background: var(--pl-hover);
 			color: var(--pl-ink);
 		}
 	}
 
-	.seg-btn:active:not(:disabled) {
-		transform: translateY(1px);
-	}
-
 	.seg-btn--on,
 	.seg-btn--on:hover:not(:disabled) {
-		background: var(--pl-accent);
-		color: #041016;
-		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.55),
-			inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+		background: var(--pl-raised);
+		color: var(--pl-ink);
 	}
 
 	.seg-btn:disabled {

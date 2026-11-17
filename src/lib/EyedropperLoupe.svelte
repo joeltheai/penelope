@@ -152,8 +152,8 @@
 		background: var(--pl-bg);
 		box-shadow:
 			0 0 0 2px var(--pl-accent),
-			0 0 0 5px var(--pl-dock),
-			0 14px 30px rgba(0, 0, 0, 0.6);
+			0 0 0 3px var(--pl-dock),
+			0 12px 28px rgba(0, 0, 0, 0.45);
 		z-index: 60;
 	}
 
@@ -200,13 +200,11 @@
 		bottom: -30px;
 		translate: -50% 0;
 		padding: 3px 8px;
-		font-size: 10px;
-		letter-spacing: 0.1em;
+		font-size: 11px;
 		color: var(--pl-ink);
-		background: var(--pl-dock);
-		border: 1px solid var(--pl-line-strong);
-		border-radius: 2px;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+		background: var(--pl-panel);
+		border: 1px solid var(--pl-line);
+		border-radius: 6px;
 		white-space: nowrap;
 	}
 </style>

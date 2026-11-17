@@ -141,15 +141,13 @@
 	}
 
 	.label {
-		font-size: 9px;
-		font-weight: 700;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
+		font-size: 11px;
+		font-weight: 500;
 		color: var(--pl-dim);
 	}
 
 	.value {
-		font-size: 10px;
+		font-size: 11px;
 		color: var(--pl-ink);
 		flex: none;
 	}
@@ -178,23 +176,18 @@
 		display: block;
 		width: 100%;
 		height: 14px;
-		border-radius: 2px;
-		box-shadow:
-			inset 0 0 0 1px rgba(0, 0, 0, 0.65),
-			0 0 0 1px var(--pl-line-strong);
+		border-radius: 7px;
 	}
 
 	.thumb {
 		position: absolute;
 		top: 50%;
-		width: 14px;
-		height: 14px;
+		width: 16px;
+		height: 16px;
 		translate: -50% -50%;
-		border-radius: 2px;
+		border-radius: 50%;
 		border: 2px solid #ffffff;
-		box-shadow:
-			0 0 0 1px rgba(0, 0, 0, 0.8),
-			0 1px 3px rgba(0, 0, 0, 0.6);
+		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
 		pointer-events: none;
 	}
 </style>
