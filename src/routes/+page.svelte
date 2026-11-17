@@ -23,14 +23,16 @@
 	} from '$lib/gpuPaint';
 	import { EMPTY_HISTORY_STATE, type HistoryApi, type HistoryUiState } from '$lib/historyStore';
 
-	type ToolEntry = { id: ToolKind; label: string; icon: IconName; key: string };
+	type ToolEntry = { id: ToolKind; label: string; short: string; icon: IconName; key: string };
+
+	const PEN_TOOL: ToolEntry = { id: 'pen', label: 'Pen', short: 'Pen', icon: 'pen', key: 'P' };
 
 	const TOOLS: ToolEntry[] = [
-		{ id: 'pen', label: 'Pen', icon: 'pen', key: 'P' },
-		{ id: 'airbrush', label: 'Airbrush', icon: 'airbrush', key: 'A' },
-		{ id: 'lasso', label: 'Lasso', icon: 'lasso', key: 'L' },
-		{ id: 'fan', label: 'Fan', icon: 'fan', key: 'F' },
-		{ id: 'fanFade', label: 'Fan Fade', icon: 'fanFade', key: 'G' }
+		PEN_TOOL,
+		{ id: 'airbrush', label: 'Airbrush', short: 'Air', icon: 'airbrush', key: 'A' },
+		{ id: 'lasso', label: 'Lasso', short: 'Lasso', icon: 'lasso', key: 'L' },
+		{ id: 'fan', label: 'Fan', short: 'Fan', icon: 'fan', key: 'F' },
+		{ id: 'fanFade', label: 'Fan Fade', short: 'Fade', icon: 'fanFade', key: 'G' }
 	];
 
 	const BLEND_OPTIONS: { value: BrushBlend; label: string; hint: string }[] = [
@@ -74,7 +76,9 @@
 
 	let isBrush = $derived(brush === 'pen' || brush === 'airbrush');
 	let isLasso = $derived(brush === 'lasso');
-	let toolLabel = $derived(TOOLS.find((tool) => tool.id === brush)?.label ?? 'Pen');
+	let activeTool = $derived(TOOLS.find((tool) => tool.id === brush) ?? PEN_TOOL);
+	let toolLabel = $derived(activeTool.label);
+	let toolKey = $derived(activeTool.key);
 	let docLabel = $derived(`${docW} × ${docH}`);
 	let zoomPct = $derived(Math.round(zoom * 100));
 
@@ -232,97 +236,71 @@
 />
 
 {#if !resizeMode}
-	<header class="topbar">
-		<div class="topbar-inner">
-			<div class="brand">
-				<span class="brand-dot" aria-hidden="true"></span>
-				<span class="brand-name">PENELOPE</span>
-				<span class="brand-tag pl-mono" aria-hidden="true">2K</span>
-			</div>
-
-			<div class="readouts pl-mono">
-				<span class="readout"><span class="readout-key">DOC</span>{docLabel}</span>
-				<span class="readout-rule" aria-hidden="true"></span>
-				<span class="readout"><span class="readout-key">ZOOM</span>{zoomPct}%</span>
-			</div>
-
-			<div class="flags">
-				{#if mirrorView}
-					<span class="flag pl-mono">MIRROR</span>
-				{/if}
-			</div>
+	<nav class="tools" aria-label="Tools">
+		<div class="brand">
+			<span class="brand-mark" aria-hidden="true">P</span>
+			<span class="brand-name">PENELOPE</span>
+			<span class="brand-sub pl-mono">NT-2000</span>
 		</div>
-	</header>
 
-	<nav class="rail" class:rail--tucked={colorOpen} class:rail--sheet={settingsOpen} aria-label="Tools">
+		<span class="dock-rule" aria-hidden="true"></span>
+
 		{#each TOOLS as tool (tool.id)}
 			<ToolButton
 				icon={tool.icon}
 				label={tool.label}
+				caption={tool.short}
 				hint="{tool.label} ({tool.key})"
 				active={brush === tool.id}
 				toggle
-				marker
 				onclick={() => selectBrush(tool.id)}
 			/>
 		{/each}
-		<span class="rail-rule" aria-hidden="true"></span>
+
+		<span class="dock-rule" aria-hidden="true"></span>
+
 		<ToolButton
 			icon="eyedropper"
 			label="Eyedropper"
+			caption="Pick"
 			hint="Eyedropper (E)"
 			active={eyedropper}
 			toggle
-			marker
 			onclick={() => (eyedropper = !eyedropper)}
-		/>
-		<ToolButton
-			icon="mirror"
-			label="Mirror view"
-			hint="Mirror view (M)"
-			active={mirrorView}
-			toggle
-			marker
-			onclick={() => (mirrorView = !mirrorView)}
 		/>
 	</nav>
 
-	<button
-		type="button"
-		class="settings-tab"
-		class:settings-tab--open={settingsOpen}
-		aria-label={settingsOpen ? 'Hide tool settings' : 'Show tool settings'}
-		aria-expanded={settingsOpen}
-		aria-controls="settings-panel"
-		title="Tool settings"
-		onclick={() => (settingsOpen = !settingsOpen)}
-	>
-		<Icon name={settingsOpen ? 'chevronRight' : 'chevronLeft'} size={13} />
-		<span class="tab-text pl-caps">Settings</span>
-	</button>
-
 	<aside
 		id="settings-panel"
-		class="settings"
-		class:settings--closed={!settingsOpen}
+		class="props"
+		class:props--closed={!settingsOpen}
 		inert={!settingsOpen}
 		aria-label="Tool settings"
 	>
-		<div class="settings-head">
-			<h2 class="settings-title">Settings</h2>
-			<span class="settings-tool pl-mono">{toolLabel.toUpperCase()}</span>
+		<header class="props-head">
+			<span class="pl-led" class:pl-led--off={!settingsOpen} aria-hidden="true"></span>
+			<h2 class="props-title">Tool settings</h2>
 			<button
 				type="button"
-				class="settings-close"
+				class="props-close"
 				aria-label="Hide tool settings"
 				title="Hide settings"
 				onclick={() => (settingsOpen = false)}
 			>
-				<Icon name="chevronDown" size={14} />
+				<Icon name="close" size={14} />
 			</button>
+		</header>
+
+		<div class="props-id">
+			<span class="props-glyph"><Icon name={activeTool.icon} size={24} strokeWidth={2} /></span>
+			<div class="props-id-copy">
+				<span class="props-kicker">Active tool</span>
+				<span class="props-name">{toolLabel}</span>
+			</div>
+			<span class="props-key pl-mono" aria-hidden="true">{toolKey}</span>
 		</div>
 
-		<div class="settings-scroll">
+		<div class="props-scroll">
 			{#if isBrush}
 				<section class="sec" aria-labelledby="sec-tip">
 					<h3 class="sec-title" id="sec-tip">Tip</h3>
@@ -456,9 +434,38 @@
 				</section>
 			{/if}
 		</div>
+
+		<footer class="props-foot pl-mono">
+			P PEN · A AIR · L LASSO · F FAN · G FADE · E PICK · H HISTORY
+		</footer>
 	</aside>
 
-	<div class="transport" role="toolbar" aria-label="Document actions">
+	<div class="dockbar" role="toolbar" aria-label="Document actions" bind:this={dockEl}>
+		<button
+			type="button"
+			class="color-cell"
+			aria-label="Color {color.toUpperCase()} — open color picker"
+			aria-haspopup="dialog"
+			aria-expanded={colorOpen}
+			title="Color"
+			onclick={() => (colorOpen = !colorOpen)}
+		>
+			<span class="color-swatch" style:background={color} aria-hidden="true"></span>
+			<span class="color-copy">
+				<span class="color-label">Color</span>
+				<span class="color-hex pl-mono">{color.toUpperCase()}</span>
+			</span>
+			<Icon name={colorOpen ? 'chevronDown' : 'chevronUp'} size={12} />
+		</button>
+
+		{#if colorOpen}
+			<div class="dock-pop">
+				<ColorPicker bind:color bind:open={colorOpen} bind:picking={eyedropper} />
+			</div>
+		{/if}
+
+		<span class="bar-rule" aria-hidden="true"></span>
+
 		<ToolButton
 			icon="undo"
 			label="Undo"
@@ -473,7 +480,6 @@
 			disabled={!canRedo}
 			onclick={() => editApi?.redo()}
 		/>
-		<span class="bar-rule" aria-hidden="true"></span>
 		<ToolButton
 			icon="history"
 			label="History"
@@ -488,11 +494,10 @@
 				<span class="badge pl-mono" aria-hidden="true">{historyBadge}</span>
 			{/if}
 		</ToolButton>
-		<span class="bar-rule" aria-hidden="true"></span>
 		<ToolButton
 			icon="mirror"
 			label="Mirror view"
-			hint="Mirror view (M)"
+			hint="Mirror view"
 			active={mirrorView}
 			toggle
 			onclick={() => (mirrorView = !mirrorView)}
@@ -503,6 +508,26 @@
 			hint="Canvas size — {docLabel}"
 			onclick={toggleResizeMode}
 		/>
+
+		<div class="bar-readout pl-mono">
+			<span class="bar-doc">DOC <b>{docLabel}</b></span>
+			<span class="bar-sep" aria-hidden="true"></span>
+			<span class="bar-zoom">ZOOM <b>{zoomPct}%</b></span>
+		</div>
+
+		<button
+			type="button"
+			class="panel-toggle"
+			class:panel-toggle--on={settingsOpen}
+			aria-label={settingsOpen ? 'Hide tool settings' : 'Show tool settings'}
+			aria-pressed={settingsOpen}
+			aria-controls="settings-panel"
+			title="Toggle tool settings"
+			onclick={() => (settingsOpen = !settingsOpen)}
+		>
+			<Icon name="panel" size={16} strokeWidth={2} />
+			<span>Panel</span>
+		</button>
 	</div>
 
 	<span class="pl-sr" role="status">{historyAnnouncement}</span>
@@ -513,35 +538,6 @@
 		open={timelineOpen}
 		onclose={() => (timelineOpen = false)}
 	/>
-
-	<div class="dock" class:dock--sheet={settingsOpen} bind:this={dockEl}>
-		{#if colorOpen}
-			<div class="dock-pop">
-				<ColorPicker bind:color bind:open={colorOpen} bind:picking={eyedropper} />
-			</div>
-		{/if}
-		<button
-			type="button"
-			class="dock-btn"
-			aria-label="Color {color.toUpperCase()} — open color picker"
-			aria-haspopup="dialog"
-			aria-expanded={colorOpen}
-			title="Color"
-			onclick={() => (colorOpen = !colorOpen)}
-		>
-			<span class="dock-swatch" style:background={color} aria-hidden="true"></span>
-			<span class="dock-hex pl-mono">{color.toUpperCase()}</span>
-			<span class="dock-chev"><Icon name={colorOpen ? 'chevronDown' : 'chevronUp'} size={12} /></span>
-		</button>
-	</div>
-
-	<div class="status pl-mono" aria-hidden="true">
-		<span class="status-value">{zoomPct}%</span>
-		<span class="status-dot">·</span>
-		<span class="status-value">{docLabel}</span>
-		<span class="status-dot">·</span>
-		<span>{toolLabel.toUpperCase()}</span>
-	</div>
 {:else}
 	<div class="resize-hud">
 		<div class="resize-card">
@@ -562,356 +558,233 @@
 {/if}
 
 <style>
-	.topbar {
+	/* ---------- Left tool dock ---------- */
+
+	.tools {
 		position: fixed;
-		top: 0;
-		left: 0;
-		right: 0;
 		z-index: 30;
-		height: calc(var(--pl-topbar) + env(safe-area-inset-top, 0px));
-		padding-top: env(safe-area-inset-top, 0px);
-		background:
-			linear-gradient(180deg, rgba(48, 41, 108, 0.94), rgba(11, 8, 30, 0.96)),
-			var(--pl-panel);
-		border-bottom: 1px solid var(--pl-line);
-		box-shadow:
-			0 1px 0 rgba(255, 255, 255, 0.06),
-			0 14px 36px rgba(0, 0, 0, 0.5);
-	}
-
-	/* Neon hairline under the chrome header. */
-	.topbar::after {
-		content: '';
-		position: absolute;
-		left: 0;
-		right: 0;
-		bottom: -1px;
-		height: 1px;
-		background: var(--pl-neon);
-		opacity: 0.6;
-		pointer-events: none;
-	}
-
-	/* Faint horizontal lens streak, the Y2K kind. */
-	.topbar::before {
-		content: '';
-		position: absolute;
 		top: 0;
-		right: 6%;
-		width: 320px;
-		height: 100%;
-		background: linear-gradient(
-			90deg,
-			transparent,
-			rgba(255, 255, 255, 0.05) 38%,
-			rgba(255, 143, 228, 0.16) 50%,
-			rgba(87, 247, 255, 0.1) 62%,
-			transparent
-		);
-		filter: blur(7px);
-		opacity: 0.8;
-		pointer-events: none;
-	}
-
-	.topbar-inner {
-		display: grid;
-		grid-template-columns: 1fr auto 1fr;
-		align-items: center;
-		height: var(--pl-topbar);
-		padding-left: max(var(--pl-gutter), env(safe-area-inset-left, 0px));
-		padding-right: max(var(--pl-gutter), env(safe-area-inset-right, 0px));
-		gap: 12px;
-	}
-
-	.brand {
-		position: relative;
-		display: flex;
-		align-items: center;
-		gap: 9px;
-		min-width: 0;
-	}
-
-	/* Soft lens flare behind the wordmark. */
-	.brand::before {
-		content: '';
-		position: absolute;
-		left: -26px;
-		top: 50%;
-		width: 190px;
-		height: 70px;
-		translate: 0 -50%;
-		background: radial-gradient(
-			ellipse at 28% 50%,
-			rgba(87, 247, 255, 0.28),
-			rgba(143, 123, 255, 0.12) 42%,
-			transparent 72%
-		);
-		filter: blur(10px);
-		pointer-events: none;
-	}
-
-	.brand-dot {
-		position: relative;
-		width: 9px;
-		height: 9px;
-		flex: none;
-		border-radius: 50%;
-		background: radial-gradient(circle at 34% 28%, #ffffff, #7dfbff 36%, #2fa6ff 68%, #7a5cff 100%);
-		box-shadow:
-			0 0 0 1px rgba(255, 255, 255, 0.55),
-			0 0 14px rgba(87, 247, 255, 0.85),
-			0 0 26px rgba(87, 247, 255, 0.35);
-		animation: twinkle 4.5s ease-in-out infinite;
-	}
-
-	@keyframes twinkle {
-		0%,
-		100% {
-			opacity: 0.82;
-			box-shadow:
-				0 0 0 1px rgba(255, 255, 255, 0.55),
-				0 0 12px rgba(87, 247, 255, 0.7),
-				0 0 22px rgba(87, 247, 255, 0.26);
-		}
-		50% {
-			opacity: 1;
-			box-shadow:
-				0 0 0 1px rgba(255, 255, 255, 0.7),
-				0 0 18px rgba(87, 247, 255, 0.95),
-				0 0 34px rgba(255, 75, 216, 0.38);
-		}
-	}
-
-	.brand-name {
-		position: relative;
-		font-family: var(--pl-display);
-		font-size: 15px;
-		font-style: italic;
-		font-weight: 800;
-		letter-spacing: 0.26em;
-		line-height: 1;
-		white-space: nowrap;
-		background: linear-gradient(94deg, #ffffff 4%, #b9fdff 38%, #8f7bff 68%, #ff8fe4 100%);
-		-webkit-background-clip: text;
-		background-clip: text;
-		color: transparent;
-		filter: drop-shadow(0 0 8px rgba(87, 247, 255, 0.35));
-	}
-
-	.brand-tag {
-		position: relative;
-		padding: 2px 6px;
-		border: 1px solid var(--pl-line-strong);
-		border-radius: 4px;
-		background: rgba(87, 247, 255, 0.08);
-		color: var(--pl-accent);
-		font-size: 8px;
-		letter-spacing: 0.16em;
-		box-shadow: 0 0 10px rgba(87, 247, 255, 0.16);
-	}
-
-	.readouts {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		font-size: 10.5px;
-		color: #cfe4ff;
-		white-space: nowrap;
-		text-shadow: 0 0 12px rgba(87, 247, 255, 0.25);
-	}
-
-	.readout {
-		display: flex;
-		align-items: baseline;
-		gap: 6px;
-	}
-
-	.readout-key {
-		font-size: 9px;
-		letter-spacing: 0.16em;
-		color: var(--pl-accent);
-		opacity: 0.72;
-	}
-
-	.readout-rule {
-		width: 1px;
-		height: 12px;
-		background: linear-gradient(180deg, transparent, var(--pl-line-strong), transparent);
-	}
-
-	.flags {
-		display: flex;
-		justify-content: flex-end;
-	}
-
-	.flag {
-		padding: 2px 7px;
-		border: 1px solid var(--pl-line-strong);
-		border-radius: 999px;
-		background: rgba(87, 247, 255, 0.08);
-		font-size: 9px;
-		letter-spacing: 0.12em;
-		color: var(--pl-accent);
-		box-shadow: 0 0 12px rgba(87, 247, 255, 0.18);
-	}
-
-	.rail {
-		position: fixed;
-		z-index: 28;
-		left: max(8px, env(safe-area-inset-left, 0px));
-		top: 50%;
-		translate: 0 -50%;
+		left: 0;
+		bottom: 0;
+		width: var(--pl-tools);
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		gap: 3px;
-		width: var(--pl-rail);
-		padding: 5px;
-		background: var(--pl-panel-bg);
-		border: 1px solid var(--pl-line);
-		border-radius: 16px;
-		box-shadow:
-			var(--pl-shadow),
-			var(--pl-top-highlight),
-			inset 0 0 0 1px rgba(255, 255, 255, 0.03);
-		transition: opacity 140ms var(--pl-ease);
+		padding: 10px 8px;
+		overflow-y: auto;
+		background: var(--pl-metal);
+		border-right: 1px solid var(--pl-line);
+		box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.5);
+		scrollbar-width: none;
 	}
 
-	/* Neon filament along the rail. */
-	.rail::before {
-		content: '';
-		position: absolute;
-		top: 10px;
-		bottom: 10px;
-		left: -1px;
-		width: 1px;
-		background: linear-gradient(
-			180deg,
-			transparent,
-			rgba(87, 247, 255, 0.55) 22%,
-			rgba(255, 75, 216, 0.4) 78%,
-			transparent
-		);
-		opacity: 0.65;
-		pointer-events: none;
+	.tools::-webkit-scrollbar {
+		display: none;
 	}
 
-	/* The color popover opens over the left column; tuck the rail so it never sits under it. */
-	.rail--tucked {
-		opacity: 0;
-		pointer-events: none;
-	}
-
-	.rail-rule {
-		width: 26px;
-		height: 1px;
-		margin: 5px 0;
-		background: linear-gradient(90deg, transparent, var(--pl-line-strong), transparent);
-	}
-
-	.settings {
-		position: fixed;
-		z-index: 26;
-		top: calc(68px + env(safe-area-inset-top, 0px));
-		bottom: calc(92px + env(safe-area-inset-bottom, 0px));
-		right: max(8px, env(safe-area-inset-right, 0px));
-		width: var(--pl-settings);
+	.brand {
 		display: flex;
 		flex-direction: column;
-		overflow: hidden;
-		background: var(--pl-panel-bg);
-		border: 1px solid var(--pl-line);
-		border-radius: 16px;
+		align-items: center;
+		gap: 5px;
+		padding: 2px 0 10px;
+	}
+
+	.brand-mark {
+		position: relative;
+		display: grid;
+		place-items: center;
+		width: 42px;
+		height: 42px;
+		border-radius: var(--pl-radius-sm);
+		background: linear-gradient(180deg, #3a3454 0%, #1c1830 52%, #2c2644 100%);
+		border: 1px solid #4c4468;
 		box-shadow:
-			var(--pl-shadow),
-			var(--pl-top-highlight),
-			inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+			inset 0 1px 0 rgba(255, 255, 255, 0.22),
+			inset 0 -1px 0 rgba(0, 0, 0, 0.65),
+			0 1px 0 #000;
+		color: #cfe8f5;
+		font-family: var(--pl-display);
+		font-size: 20px;
+		font-style: italic;
+		font-weight: 800;
+		line-height: 1;
+	}
+
+	.brand-mark::after {
+		content: '';
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		width: 4px;
+		height: 4px;
+		border-radius: 50%;
+		background: var(--pl-accent);
+		box-shadow: 0 0 6px rgba(94, 242, 255, 0.9);
+	}
+
+	.brand-name {
+		font-size: 8px;
+		font-weight: 800;
+		letter-spacing: 0.18em;
+		color: var(--pl-ink);
+	}
+
+	.brand-sub {
+		font-size: 7px;
+		letter-spacing: 0.14em;
+		color: var(--pl-faint);
+	}
+
+	.dock-rule {
+		flex: none;
+		width: 44px;
+		height: 1px;
+		margin: 6px 0;
+		background: var(--pl-line);
+		box-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+	}
+
+	/* ---------- Right properties dock ---------- */
+
+	.props {
+		position: fixed;
+		z-index: 30;
+		top: 0;
+		right: 0;
+		bottom: var(--pl-bar);
+		width: var(--pl-props);
+		display: flex;
+		flex-direction: column;
+		background: var(--pl-metal);
+		border-left: 1px solid var(--pl-line);
+		box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.03);
 		transition:
 			transform 150ms var(--pl-ease),
 			opacity 150ms var(--pl-ease);
 	}
 
-	/* Neon rim on the settings card. */
-	.settings::before {
+	.props::before {
 		content: '';
 		position: absolute;
 		top: 0;
-		left: 24px;
-		right: 24px;
-		height: 1px;
-		background: var(--pl-neon);
-		opacity: 0.7;
+		left: 0;
+		width: 96px;
+		height: 2px;
+		background: var(--pl-accent);
 		pointer-events: none;
 	}
 
-	.settings--closed {
-		transform: translateX(calc(100% + 24px));
+	.props--closed {
+		transform: translateX(100%);
 		opacity: 0;
 		pointer-events: none;
 	}
 
-	.settings-head {
+	.props-head {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		min-height: 42px;
-		padding: 0 10px 0 13px;
+		height: 38px;
+		flex: none;
+		padding: 0 8px 0 12px;
+		background: var(--pl-head-bg);
 		border-bottom: 1px solid var(--pl-line);
-		background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent);
 	}
 
-	.settings-title {
-		display: flex;
-		align-items: center;
-		gap: 7px;
+	.props-title {
 		margin: 0;
-		font-size: 10px;
+		font-size: 9px;
 		font-weight: 700;
 		letter-spacing: 0.16em;
 		text-transform: uppercase;
-		color: var(--pl-ink);
-	}
-
-	.settings-title::before {
-		content: '';
-		width: 5px;
-		height: 5px;
-		flex: none;
-		rotate: 45deg;
-		background: var(--pl-accent);
-		box-shadow:
-			0 0 8px rgba(87, 247, 255, 0.8),
-			0 0 16px rgba(87, 247, 255, 0.35);
-	}
-
-	.settings-tool {
-		margin-left: auto;
-		padding: 2px 7px;
-		border: 1px solid var(--pl-line);
-		border-radius: 999px;
-		background: rgba(87, 247, 255, 0.07);
-		font-size: 8.5px;
-		letter-spacing: 0.14em;
-		color: var(--pl-accent);
-	}
-
-	.settings-close {
-		display: none;
-		place-items: center;
-		width: var(--pl-tap);
-		height: var(--pl-tap);
-		margin-right: -8px;
-		border-radius: 6px;
 		color: var(--pl-dim);
 	}
 
-	.settings-scroll {
+	.props-close {
+		display: grid;
+		place-items: center;
+		width: 30px;
+		height: 30px;
+		margin-left: auto;
+		border: 1px solid transparent;
+		border-radius: var(--pl-radius-sm);
+		color: var(--pl-dim);
+	}
+
+	@media (hover: hover) {
+		.props-close:hover {
+			background: var(--pl-hover);
+			border-color: var(--pl-line);
+			color: var(--pl-ink);
+		}
+	}
+
+	.props-id {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex: none;
+		padding: 12px;
+		border-bottom: 1px solid var(--pl-line);
+		background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent);
+	}
+
+	.props-glyph {
+		display: grid;
+		place-items: center;
+		width: 44px;
+		height: 44px;
+		flex: none;
+		border: 1px solid var(--pl-line-strong);
+		border-radius: var(--pl-radius-sm);
+		background: var(--pl-sunken-bg);
+		box-shadow: var(--pl-bevel);
+		color: var(--pl-accent);
+	}
+
+	.props-id-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.props-kicker {
+		font-size: 8px;
+		font-weight: 700;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		color: var(--pl-faint);
+	}
+
+	.props-name {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--pl-ink);
+	}
+
+	.props-key {
+		display: grid;
+		place-items: center;
+		width: 22px;
+		height: 22px;
+		margin-left: auto;
+		flex: none;
+		border: 1px solid var(--pl-line);
+		border-radius: var(--pl-radius-sm);
+		background: var(--pl-sunken);
+		color: var(--pl-dim);
+		font-size: 9px;
+	}
+
+	.props-scroll {
 		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 13px;
-		padding: 10px 13px 16px;
+		padding: 0 12px 16px;
 		overflow-y: auto;
 		overscroll-behavior: contain;
 		touch-action: pan-y;
@@ -920,44 +793,44 @@
 		scrollbar-color: var(--pl-line-strong) transparent;
 	}
 
-	.settings-scroll::-webkit-scrollbar {
-		width: 8px;
-	}
-
-	.settings-scroll::-webkit-scrollbar-thumb {
-		background: var(--pl-line-strong);
-		border-radius: 4px;
+	.props-foot {
+		flex: none;
+		padding: 8px 12px;
+		border-top: 1px solid var(--pl-line);
+		font-size: 8px;
+		letter-spacing: 0.1em;
+		line-height: 1.7;
+		color: var(--pl-faint);
 	}
 
 	.sec {
 		display: flex;
 		flex-direction: column;
+		padding: 12px 0;
 	}
 
 	.sec + .sec {
 		border-top: 1px solid var(--pl-line);
-		padding-top: 12px;
 	}
 
 	.sec-title {
 		display: flex;
 		align-items: center;
 		gap: 7px;
-		margin: 0 0 3px;
-		font-size: 9.5px;
+		margin: 0 0 4px;
+		font-size: 9px;
 		font-weight: 700;
 		letter-spacing: 0.16em;
 		text-transform: uppercase;
-		color: #86e9ff;
+		color: var(--pl-dim);
 	}
 
 	.sec-title::before {
 		content: '';
-		width: 10px;
-		height: 2px;
-		border-radius: 2px;
-		background: var(--pl-neon);
-		box-shadow: 0 0 8px rgba(87, 247, 255, 0.5);
+		width: 3px;
+		height: 9px;
+		border-radius: 1px;
+		background: var(--pl-accent);
 	}
 
 	.field {
@@ -968,72 +841,80 @@
 	}
 
 	.field-label {
-		font-size: 10px;
+		font-size: 9px;
 		font-weight: 700;
-		letter-spacing: 0.12em;
+		letter-spacing: 0.14em;
 		text-transform: uppercase;
 		color: var(--pl-dim);
 	}
 
-	.settings-tab {
+	.dockbar {
 		position: fixed;
-		z-index: 27;
-		top: 50%;
-		right: max(8px, env(safe-area-inset-right, 0px));
-		translate: 0 -50%;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		width: 22px;
-		height: 82px;
-		background: var(--pl-chrome);
-		border: 1px solid var(--pl-line-strong);
-		border-radius: 999px 0 0 999px;
-		color: var(--pl-accent);
-		box-shadow:
-			0 0 18px rgba(87, 247, 255, 0.22),
-			inset 0 1px 0 rgba(255, 255, 255, 0.25);
-		transition:
-			transform 150ms var(--pl-ease),
-			opacity 150ms var(--pl-ease);
-	}
-
-	/* Keep the tab slim but give it a 44px-wide touch target on its canvas side. */
-	.settings-tab::after {
-		content: '';
-		position: absolute;
-		inset: 0 0 0 -24px;
-	}
-
-	.settings-tab--open {
-		transform: translateX(calc(-1 * var(--pl-settings)));
-		border-radius: 999px 0 0 999px;
-		border-right-color: transparent;
-	}
-
-	.tab-text {
-		display: none;
-	}
-
-	.transport {
-		position: fixed;
-		z-index: 30;
-		left: 50%;
-		bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-		translate: -50% 0;
+		z-index: 32;
+		left: var(--pl-tools);
+		right: 0;
+		bottom: 0;
+		height: var(--pl-bar);
 		display: flex;
 		align-items: center;
 		gap: 3px;
-		height: var(--pl-transport);
-		padding: 0 6px;
-		background: var(--pl-panel-bg);
-		border: 1px solid var(--pl-line-strong);
-		border-radius: 16px;
-		box-shadow:
-			var(--pl-shadow),
-			var(--pl-top-highlight),
-			0 0 26px rgba(87, 247, 255, 0.14);
+		padding: 0 10px;
+		background: var(--pl-metal);
+		border-top: 1px solid var(--pl-line-strong);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+	}
+
+	.color-cell {
+		display: flex;
+		align-items: center;
+		gap: 9px;
+		height: 40px;
+		flex: none;
+		padding: 0 9px 0 4px;
+		border: 1px solid var(--pl-line);
+		border-radius: var(--pl-radius-sm);
+		background: var(--pl-panel);
+		box-shadow: var(--pl-bevel);
+	}
+
+	@media (hover: hover) {
+		.color-cell:hover {
+			border-color: var(--pl-line-strong);
+		}
+	}
+
+	.color-swatch {
+		width: 30px;
+		height: 30px;
+		flex: none;
+		border-radius: 2px;
+		border: 1px solid rgba(255, 255, 255, 0.55);
+		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.7);
+	}
+
+	.color-copy {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0;
+	}
+
+	.color-label {
+		font-size: 7px;
+		font-weight: 700;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		color: var(--pl-faint);
+	}
+
+	.color-hex {
+		font-size: 10px;
+		letter-spacing: 0.06em;
+		color: var(--pl-ink);
+	}
+
+	.color-cell :global(svg) {
+		color: var(--pl-faint);
 	}
 
 	.bar-rule {
@@ -1041,137 +922,108 @@
 		width: 1px;
 		height: 26px;
 		margin: 0 5px;
-		background: linear-gradient(180deg, transparent, var(--pl-line-strong), transparent);
+		background: var(--pl-line);
 	}
 
-	.badge {
-		position: absolute;
-		top: 4px;
-		right: 3px;
-		display: grid;
-		place-items: center;
-		min-width: 15px;
-		height: 15px;
-		padding: 0 4px;
-		border-radius: 999px;
-		border: 1px solid var(--pl-line-strong);
-		background: linear-gradient(180deg, rgba(87, 247, 255, 0.24), rgba(87, 247, 255, 0.06));
-		font-size: 8.5px;
-		line-height: 1;
-		color: var(--pl-accent);
-		box-shadow: 0 0 10px rgba(87, 247, 255, 0.25);
-	}
-
-	.badge--dot {
-		top: 8px;
-		right: 8px;
-		min-width: 0;
-		width: 7px;
-		height: 7px;
-		padding: 0;
-		border: 0;
-		background: var(--pl-accent);
-		box-shadow:
-			0 0 10px rgba(87, 247, 255, 0.9),
-			0 0 18px rgba(87, 247, 255, 0.4);
-	}
-
-	.dock {
-		position: fixed;
-		z-index: 32;
-		left: max(var(--pl-gutter), env(safe-area-inset-left, 0px));
-		bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-		transition: opacity 140ms var(--pl-ease);
-	}
-
-	.dock-btn {
+	.bar-readout {
 		display: flex;
 		align-items: center;
-		gap: 9px;
-		height: var(--pl-tap);
-		padding: 0 12px 0 6px;
-		background: var(--pl-panel-bg);
-		border: 1px solid var(--pl-line-strong);
-		border-radius: 999px;
-		box-shadow:
-			0 10px 26px rgba(0, 0, 0, 0.5),
-			var(--pl-top-highlight),
-			0 0 22px rgba(87, 247, 255, 0.16);
-		transition: transform 130ms var(--pl-ease);
+		gap: 12px;
+		margin-left: auto;
+		padding: 0 4px;
+		font-size: 9px;
+		letter-spacing: 0.1em;
+		color: var(--pl-faint);
+		white-space: nowrap;
 	}
 
-	.dock-btn:active {
-		transform: scale(0.98);
+	.bar-readout b {
+		font-weight: 500;
+		color: var(--pl-ink);
+	}
+
+	.bar-sep {
+		width: 1px;
+		height: 14px;
+		background: var(--pl-line);
+	}
+
+	.panel-toggle {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		height: 40px;
+		flex: none;
+		padding: 0 10px;
+		border: 1px solid var(--pl-line);
+		border-radius: var(--pl-radius-sm);
+		background: var(--pl-panel);
+		color: var(--pl-dim);
+		font-size: 9px;
+		font-weight: 700;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		box-shadow: var(--pl-bevel);
 	}
 
 	@media (hover: hover) {
-		.dock-btn:hover {
-			background: var(--pl-panel-bg);
-			border-color: var(--pl-accent);
+		.panel-toggle:hover {
+			border-color: var(--pl-line-strong);
+			color: var(--pl-ink);
 		}
 	}
 
-	.dock-swatch {
-		width: 32px;
-		height: 32px;
-		flex: none;
-		border-radius: 50%;
-		border: 2px solid rgba(255, 255, 255, 0.72);
-		box-shadow:
-			inset 0 2px 4px rgba(255, 255, 255, 0.35),
-			inset 0 -2px 4px rgba(0, 0, 0, 0.35),
-			0 0 16px rgba(87, 247, 255, 0.28);
-	}
-
-	.dock-hex {
-		font-size: 10px;
-		letter-spacing: 0.14em;
-		color: var(--pl-ink);
-		text-shadow: 0 0 10px rgba(87, 247, 255, 0.4);
-	}
-
-	.dock-chev {
+	.panel-toggle--on,
+	.panel-toggle--on:hover {
+		background: var(--pl-panel);
+		border-color: rgba(94, 242, 255, 0.5);
 		color: var(--pl-accent);
-		opacity: 0.75;
+		box-shadow: inset 0 0 0 1px rgba(94, 242, 255, 0.12);
 	}
 
 	.dock-pop {
 		position: absolute;
-		left: 0;
-		bottom: calc(100% + 8px);
+		left: 10px;
+		bottom: calc(100% + 10px);
 		z-index: 40;
 	}
 
-	.status {
-		position: fixed;
-		z-index: 20;
-		right: max(16px, env(safe-area-inset-right, 0px));
-		bottom: calc(33px + env(safe-area-inset-bottom, 0px));
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 9.5px;
-		letter-spacing: 0.14em;
-		color: var(--pl-faint);
-		pointer-events: none;
-		text-shadow: 0 0 10px rgba(87, 247, 255, 0.2);
+	.badge {
+		position: absolute;
+		top: 2px;
+		right: 2px;
+		display: grid;
+		place-items: center;
+		min-width: 14px;
+		height: 14px;
+		padding: 0 3px;
+		border: 1px solid var(--pl-line-strong);
+		border-radius: 2px;
+		background: var(--pl-panel);
+		font-size: 8px;
+		line-height: 1;
+		color: var(--pl-dim);
 	}
 
-	.status-value {
-		color: #bfe6ff;
+	.badge--dot {
+		min-width: 0;
+		width: 6px;
+		height: 6px;
+		padding: 0;
+		border: 0;
+		border-radius: 50%;
+		background: var(--pl-live);
+		box-shadow: 0 0 6px rgba(255, 61, 154, 0.8);
 	}
 
-	.status-dot {
-		color: var(--pl-accent);
-		opacity: 0.55;
-	}
+	/* ---------- Resize mode ---------- */
 
 	.resize-hud {
 		position: fixed;
 		z-index: 45;
-		top: calc(10px + env(safe-area-inset-top, 0px));
-		left: max(10px, env(safe-area-inset-left, 0px));
-		right: max(10px, env(safe-area-inset-right, 0px));
+		top: calc(12px + env(safe-area-inset-top, 0px));
+		left: max(12px, env(safe-area-inset-left, 0px));
+		right: max(12px, env(safe-area-inset-right, 0px));
 		display: flex;
 		align-items: flex-start;
 		justify-content: space-between;
@@ -1182,21 +1034,17 @@
 	.resize-card {
 		display: flex;
 		flex-direction: column;
-		gap: 3px;
-		max-width: 34ch;
-		padding: 9px 13px;
-		background: var(--pl-panel-bg);
-		border: 1px solid var(--pl-line);
-		border-radius: 14px;
-		box-shadow:
-			var(--pl-shadow),
-			var(--pl-top-highlight),
-			0 0 22px rgba(87, 247, 255, 0.14);
+		gap: 4px;
+		max-width: 36ch;
+		padding: 10px 12px;
+		background: var(--pl-dock);
+		border: 1px solid var(--pl-line-strong);
+		border-radius: var(--pl-radius-sm);
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 	}
 
 	.resize-title {
 		color: var(--pl-accent);
-		text-shadow: 0 0 10px rgba(87, 247, 255, 0.45);
 	}
 
 	.resize-note {
@@ -1210,25 +1058,17 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		height: var(--pl-tap);
-		padding: 0 15px;
-		background: var(--pl-chrome);
+		height: 40px;
+		padding: 0 12px;
+		background: var(--pl-panel);
 		border: 1px solid var(--pl-line-strong);
-		border-radius: 999px;
-		box-shadow:
-			var(--pl-shadow),
-			var(--pl-top-highlight),
-			0 0 18px rgba(87, 247, 255, 0.22);
-		font-size: 10px;
+		border-radius: var(--pl-radius-sm);
+		box-shadow: var(--pl-bevel);
+		font-size: 9px;
 		font-weight: 700;
-		letter-spacing: 0.12em;
+		letter-spacing: 0.14em;
 		text-transform: uppercase;
 		color: var(--pl-ink);
-		transition: transform 130ms var(--pl-ease);
-	}
-
-	.resize-exit:active {
-		transform: scale(0.97);
 	}
 
 	@media (hover: hover) {
@@ -1237,111 +1077,100 @@
 		}
 	}
 
+	/* ---------- Responsive: fold the docks into bottom rails ---------- */
+
 	@media (max-width: 900px) {
-		.settings {
+		.tools {
 			top: auto;
-			left: max(12px, env(safe-area-inset-left, 0px));
-			right: max(12px, env(safe-area-inset-right, 0px));
+			left: 0;
+			right: 0;
+			bottom: var(--pl-bar);
 			width: auto;
-			bottom: calc(76px + env(safe-area-inset-bottom, 0px));
-			max-height: 44vh;
+			height: 60px;
+			flex-direction: row;
+			justify-content: flex-start;
+			gap: 0;
+			padding: 0 4px;
+			border-right: 0;
+			border-top: 1px solid var(--pl-line);
+			box-shadow: none;
 		}
 
-		.rail--sheet {
-			opacity: 0;
-			pointer-events: none;
-		}
-
-		.dock--sheet {
-			opacity: 0;
-			pointer-events: none;
-		}
-
-		.settings--closed {
-			transform: translateY(14px);
-			opacity: 0;
-			pointer-events: none;
-		}
-
-		.settings-head {
-			min-height: var(--pl-tap);
-		}
-
-		.settings-close {
-			display: grid;
-		}
-
-		.settings-tab {
-			top: auto;
-			left: max(12px, env(safe-area-inset-left, 0px));
-			right: max(12px, env(safe-area-inset-right, 0px));
-			bottom: calc(76px + env(safe-area-inset-bottom, 0px));
-			translate: none;
-			width: auto;
-			height: var(--pl-tap);
-			flex-direction: row-reverse;
-			justify-content: space-between;
-			padding: 0 12px;
-			border-radius: var(--pl-radius);
-		}
-
-		.settings-tab::after {
+		.brand,
+		.dock-rule {
 			display: none;
 		}
 
-		.settings-tab--open {
+		.tools :global(.tb--captioned) {
+			width: 52px;
+			height: 52px;
+		}
+
+		.props {
+			top: auto;
+			left: 0;
+			right: 0;
+			bottom: calc(var(--pl-bar) + 60px);
+			width: auto;
+			max-height: 50vh;
+			border-left: 0;
+			border-top: 1px solid var(--pl-line-strong);
+		}
+
+		.props--closed {
+			transform: translateY(12px);
+			opacity: 0;
+			pointer-events: none;
+		}
+
+		.props-id {
+			padding: 10px 12px;
+		}
+
+		.props-foot {
 			display: none;
 		}
 
-		.tab-text {
-			display: inline;
-			color: var(--pl-dim);
+		.dockbar {
+			left: 0;
+			padding: 0 6px;
+			gap: 2px;
 		}
-	}
 
-	@media (max-width: 720px) {
-		.status {
+		.dockbar :global(.tb) {
+			width: 40px;
+			height: 40px;
+		}
+
+		.bar-doc,
+		.bar-sep {
+			display: none;
+		}
+
+		.panel-toggle {
+			width: 40px;
+			justify-content: center;
+			padding: 0;
+		}
+
+		.panel-toggle span {
 			display: none;
 		}
 	}
 
 	@media (max-width: 640px) {
-		.readouts .readout:first-child,
-		.readout-rule {
+		.color-copy {
 			display: none;
 		}
 
-		.topbar-inner {
+		.color-cell {
+			gap: 6px;
+			padding: 0 6px 0 4px;
+		}
+
+		.bar-readout {
 			gap: 8px;
-		}
-
-		.brand-name {
-			letter-spacing: 0.12em;
-		}
-
-		.dock-hex {
-			display: none;
-		}
-
-		.dock-btn {
-			padding: 0 5px;
-		}
-
-		.settings-tool {
-			display: none;
-		}
-	}
-
-	@media (max-width: 420px) {
-		.dock {
-			bottom: calc(76px + env(safe-area-inset-bottom, 0px));
-		}
-
-		.settings-tab {
-			left: auto;
-			width: auto;
-			padding: 0 14px;
-			gap: 10px;
+			padding: 0 2px;
 		}
 	}
 </style>
