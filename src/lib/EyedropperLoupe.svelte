@@ -151,10 +151,9 @@
 		border-radius: 50%;
 		background: var(--pl-bg);
 		box-shadow:
-			0 0 0 1px rgba(87, 247, 255, 0.9),
-			0 0 0 5px rgba(8, 6, 20, 0.9),
-			0 0 28px rgba(87, 247, 255, 0.45),
-			0 18px 36px rgba(0, 0, 0, 0.6);
+			0 0 0 2px var(--pl-accent),
+			0 0 0 5px var(--pl-dock),
+			0 14px 30px rgba(0, 0, 0, 0.6);
 		z-index: 60;
 	}
 
@@ -183,8 +182,7 @@
 		border-radius: 50%;
 		border: 2px solid #ffffff;
 		box-shadow:
-			0 0 0 1px rgba(0, 0, 0, 0.55),
-			0 0 10px rgba(87, 247, 255, 0.8),
+			0 0 0 1px rgba(0, 0, 0, 0.7),
 			0 1px 3px rgba(0, 0, 0, 0.4);
 	}
 
@@ -201,16 +199,14 @@
 		left: 50%;
 		bottom: -30px;
 		translate: -50% 0;
-		padding: 3px 9px;
+		padding: 3px 8px;
 		font-size: 10px;
-		letter-spacing: 0.12em;
-		color: var(--pl-accent);
-		background: var(--pl-panel);
+		letter-spacing: 0.1em;
+		color: var(--pl-ink);
+		background: var(--pl-dock);
 		border: 1px solid var(--pl-line-strong);
-		border-radius: 999px;
-		box-shadow:
-			0 4px 12px rgba(0, 0, 0, 0.4),
-			0 0 14px rgba(87, 247, 255, 0.28);
+		border-radius: 2px;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
 		white-space: nowrap;
 	}
 </style>

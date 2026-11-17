@@ -231,23 +231,17 @@
 		position: absolute;
 		pointer-events: none;
 		border: 1px solid var(--pl-accent);
-		box-shadow:
-			0 0 0 1px rgba(0, 0, 0, 0.55),
-			0 0 18px rgba(87, 247, 255, 0.5),
-			inset 0 0 22px rgba(87, 247, 255, 0.14);
+		box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
 	}
 
 	.handle {
 		position: absolute;
-		width: 11px;
-		height: 11px;
+		width: 10px;
+		height: 10px;
 		translate: -50% -50%;
-		border-radius: 3px;
-		background: radial-gradient(circle at 35% 30%, #ffffff, #b8fdff 55%, #57f7ff);
-		box-shadow:
-			0 0 0 1px rgba(0, 0, 0, 0.55),
-			0 0 10px rgba(87, 247, 255, 0.85),
-			0 0 20px rgba(87, 247, 255, 0.35);
+		border-radius: 1px;
+		background: var(--pl-accent);
+		border: 1px solid rgba(0, 0, 0, 0.8);
 	}
 
 	.bar {
@@ -258,14 +252,11 @@
 		display: flex;
 		align-items: center;
 		gap: 4px;
-		padding: 5px;
-		background: var(--pl-panel-bg);
+		padding: 4px;
+		background: var(--pl-dock);
 		border: 1px solid var(--pl-line-strong);
-		border-radius: 999px;
-		box-shadow:
-			var(--pl-shadow),
-			var(--pl-top-highlight),
-			0 0 24px rgba(87, 247, 255, 0.18);
+		border-radius: var(--pl-radius-sm);
+		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
 		pointer-events: auto;
 	}
 
@@ -273,50 +264,46 @@
 		min-width: 104px;
 		padding: 0 8px;
 		text-align: center;
-		font-size: 12px;
+		font-size: 11px;
 		letter-spacing: 0.06em;
-		color: var(--pl-accent);
-		text-shadow: 0 0 12px rgba(87, 247, 255, 0.45);
+		color: var(--pl-ink);
 		white-space: nowrap;
 	}
 
 	.bar-rule {
 		width: 1px;
 		height: 24px;
-		background: linear-gradient(180deg, transparent, var(--pl-line-strong), transparent);
+		background: var(--pl-line);
 		margin: 0 3px;
 	}
 
 	.btn {
-		height: var(--pl-tap);
-		padding: 0 16px;
-		border-radius: 999px;
-		font-size: 10px;
+		height: 40px;
+		padding: 0 14px;
+		border-radius: 2px;
+		font-size: 9px;
 		font-weight: 700;
-		letter-spacing: 0.12em;
+		letter-spacing: 0.14em;
 		text-transform: uppercase;
 		color: var(--pl-dim);
-		transition: transform 130ms var(--pl-ease);
+		transition: background 120ms var(--pl-ease);
 	}
 
 	.btn:active {
-		transform: scale(0.97);
+		transform: translateY(1px);
 	}
 
 	@media (hover: hover) {
 		.btn:hover {
-			background: rgba(87, 247, 255, 0.09);
+			background: var(--pl-hover);
 			color: var(--pl-ink);
 		}
 	}
 
 	.btn--primary,
 	.btn--primary:hover {
-		background: linear-gradient(180deg, #b6feff 0%, #57e8ff 44%, #3d9bff 100%);
-		color: #03101f;
-		text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
-		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.6),
-			0 0 16px rgba(87, 247, 255, 0.45);
+		background: var(--pl-accent);
+		color: #041016;
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
 	}
 </style>

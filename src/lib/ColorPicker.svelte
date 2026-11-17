@@ -264,20 +264,17 @@
 	.picker {
 		width: 252px;
 		max-height: min(60vh, 380px);
-		padding: 11px;
+		padding: 10px;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: 6px;
 		overflow-y: auto;
 		overscroll-behavior: contain;
 		touch-action: pan-y;
-		background: var(--pl-panel-bg);
+		background: var(--pl-dock);
 		border: 1px solid var(--pl-line-strong);
-		border-radius: 16px;
-		box-shadow:
-			var(--pl-shadow),
-			var(--pl-top-highlight),
-			0 0 26px rgba(87, 247, 255, 0.18);
+		border-radius: var(--pl-radius-sm);
+		box-shadow: 0 14px 34px rgba(0, 0, 0, 0.65);
 	}
 
 	.head {
@@ -290,60 +287,56 @@
 		width: 30px;
 		height: 30px;
 		flex: none;
-		border-radius: 9px;
-		border: 2px solid rgba(255, 255, 255, 0.66);
-		box-shadow:
-			inset 0 2px 4px rgba(255, 255, 255, 0.3),
-			inset 0 -2px 4px rgba(0, 0, 0, 0.3),
-			0 0 14px rgba(87, 247, 255, 0.3);
+		border-radius: 2px;
+		border: 1px solid rgba(255, 255, 255, 0.7);
+		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.8);
 	}
 
 	.hex {
 		flex: 1;
 		min-width: 0;
-		height: var(--pl-tap);
-		padding: 0 9px;
-		font-size: 11px;
-		letter-spacing: 0.1em;
+		height: 36px;
+		padding: 0 8px;
+		font-size: 10px;
+		letter-spacing: 0.08em;
 		color: var(--pl-ink);
-		background: rgba(3, 2, 10, 0.7);
+		background: var(--pl-sunken-bg);
 		border: 1px solid var(--pl-line);
-		border-radius: 8px;
+		border-radius: 2px;
 		text-transform: uppercase;
 		-webkit-user-select: text;
 		user-select: text;
-		transition:
-			border-color 130ms var(--pl-ease),
-			box-shadow 130ms var(--pl-ease);
+		transition: border-color 120ms var(--pl-ease);
 	}
 
 	.hex:focus {
 		outline: none;
 		border-color: var(--pl-accent);
-		box-shadow: 0 0 12px rgba(87, 247, 255, 0.3);
 	}
 
 	.icon-btn {
 		display: grid;
 		place-items: center;
-		width: var(--pl-tap);
-		height: var(--pl-tap);
+		width: 36px;
+		height: 36px;
 		flex: none;
-		border-radius: 10px;
+		border: 1px solid transparent;
+		border-radius: 2px;
 		color: var(--pl-dim);
 		transition:
-			transform 130ms var(--pl-ease),
-			background 130ms var(--pl-ease),
-			color 130ms var(--pl-ease);
+			background 120ms var(--pl-ease),
+			border-color 120ms var(--pl-ease),
+			color 120ms var(--pl-ease);
 	}
 
 	.icon-btn:active {
-		transform: scale(0.94);
+		transform: translateY(1px);
 	}
 
 	@media (hover: hover) {
 		.icon-btn:hover {
-			background: rgba(87, 247, 255, 0.09);
+			background: var(--pl-hover);
+			border-color: var(--pl-line);
 			color: var(--pl-ink);
 		}
 	}
@@ -351,7 +344,7 @@
 	.icon-btn--on {
 		background: var(--pl-accent-soft);
 		color: var(--pl-accent);
-		box-shadow: 0 0 14px rgba(87, 247, 255, 0.28);
+		border-color: rgba(94, 242, 255, 0.4);
 	}
 
 	.model {

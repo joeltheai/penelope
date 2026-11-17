@@ -919,8 +919,11 @@
 <style>
 	.timeline-layer {
 		position: fixed;
-		inset: 0;
-		z-index: 40;
+		top: 0;
+		left: var(--pl-tools);
+		right: var(--pl-props);
+		bottom: var(--pl-bar);
+		z-index: 45;
 		display: flex;
 		align-items: flex-end;
 		justify-content: center;
@@ -940,16 +943,13 @@
 		display: flex;
 		flex-direction: column;
 		width: 100%;
-		max-height: min(64vh, 560px);
-		background: var(--pl-panel-bg);
+		max-height: min(60vh, 540px);
+		background: var(--pl-dock);
 		color: var(--pl-ink);
-		border: 1px solid var(--pl-line);
+		border: 1px solid var(--pl-line-strong);
 		border-bottom: 0;
-		border-radius: 18px 18px 0 0;
-		box-shadow:
-			var(--pl-shadow),
-			var(--pl-top-highlight),
-			0 0 28px rgba(87, 247, 255, 0.12);
+		border-radius: 0;
+		box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
 		padding-bottom: env(safe-area-inset-bottom);
 		transform: translateY(0);
 		opacity: 1;
@@ -963,11 +963,10 @@
 		content: '';
 		position: absolute;
 		top: 0;
-		left: 24px;
-		right: 24px;
-		height: 1px;
-		background: var(--pl-neon);
-		opacity: 0.75;
+		left: 0;
+		width: 96px;
+		height: 2px;
+		background: var(--pl-accent);
 		pointer-events: none;
 	}
 
@@ -980,16 +979,15 @@
 	.sheet-grip {
 		display: grid;
 		place-items: center;
-		height: 16px;
+		height: 12px;
 		flex: none;
 	}
 
 	.sheet-grip span {
-		width: 44px;
-		height: 4px;
-		border-radius: 999px;
-		background: linear-gradient(90deg, transparent, var(--pl-accent), var(--pl-accent-2), transparent);
-		opacity: 0.7;
+		width: 40px;
+		height: 3px;
+		border-radius: 1px;
+		background: var(--pl-line-strong);
 	}
 
 	.sheet-head {
@@ -999,6 +997,7 @@
 		min-height: var(--pl-tap);
 		padding: 0 var(--pl-gutter);
 		border-bottom: 1px solid var(--pl-line);
+		background: var(--pl-head-bg);
 		flex: none;
 	}
 
@@ -1013,7 +1012,7 @@
 
 	.sheet-title {
 		margin: 0;
-		font-size: 11px;
+		font-size: 10px;
 		font-weight: 700;
 		letter-spacing: 0.18em;
 		text-transform: uppercase;
@@ -1043,13 +1042,13 @@
 		height: var(--pl-tap);
 		flex: none;
 		border: 1px solid transparent;
-		border-radius: 10px;
+		border-radius: var(--pl-radius-sm);
 		background: transparent;
 		color: var(--pl-dim);
 	}
 
 	.icon-button:hover {
-		background: rgba(87, 247, 255, 0.09);
+		background: var(--pl-hover);
 		color: var(--pl-ink);
 	}
 
@@ -1101,28 +1100,25 @@
 		max-width: 180px;
 		padding: 0 12px;
 		border: 1px solid var(--pl-line);
-		border-radius: 999px;
-		background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+		border-radius: var(--pl-radius-sm);
+		background: var(--pl-panel);
 		color: var(--pl-dim);
 		font-size: 12px;
 	}
 
 	.branch-chip:hover:not(:disabled) {
-		background: rgba(87, 247, 255, 0.08);
+		background: var(--pl-hover);
 		color: var(--pl-ink);
 	}
 
 	.branch-chip.active {
-		color: var(--pl-ink);
-		background: linear-gradient(180deg, rgba(87, 247, 255, 0.22), rgba(87, 247, 255, 0.07));
-		border-color: color-mix(in srgb, var(--pl-accent) 62%, var(--pl-line));
-		box-shadow:
-			0 0 14px rgba(87, 247, 255, 0.22),
-			inset 0 1px 0 rgba(255, 255, 255, 0.18);
+		color: var(--pl-accent);
+		background: var(--pl-accent-soft);
+		border-color: rgba(94, 242, 255, 0.45);
 	}
 
 	.branch-chip.active:hover:not(:disabled) {
-		background: linear-gradient(180deg, rgba(87, 247, 255, 0.28), rgba(87, 247, 255, 0.1));
+		background: rgba(94, 242, 255, 0.18);
 	}
 
 	.branch-chip:disabled {
@@ -1310,36 +1306,36 @@
 
 	.scrub::-webkit-slider-runnable-track {
 		height: 4px;
-		border-radius: 2px;
+		border-radius: 1px;
 		background: color-mix(in srgb, var(--pl-ink) 16%, transparent);
+		box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.7);
 	}
 
 	.scrub::-webkit-slider-thumb {
 		-webkit-appearance: none;
-		width: 18px;
-		height: 18px;
-		margin-top: -7px;
-		border-radius: 50%;
-		background: radial-gradient(circle at 35% 30%, #ffffff 0 40%, #c9faff 64%, #6ee7ff 100%);
-		border: 2px solid #0b0920;
+		width: 12px;
+		height: 20px;
+		margin-top: -8px;
+		border-radius: 2px;
+		background: linear-gradient(180deg, #423a5d, #191528);
+		border: 1px solid #5d5282;
 		box-shadow:
-			0 0 0 1px rgba(255, 255, 255, 0.8),
-			0 0 12px rgba(87, 247, 255, 0.75);
+			inset 0 1px 0 rgba(255, 255, 255, 0.25),
+			0 1px 2px rgba(0, 0, 0, 0.8);
 	}
 
 	.scrub::-moz-range-track {
 		height: 4px;
-		border-radius: 2px;
+		border-radius: 1px;
 		background: color-mix(in srgb, var(--pl-ink) 16%, transparent);
 	}
 
 	.scrub::-moz-range-thumb {
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		background: radial-gradient(circle at 35% 30%, #ffffff 0 40%, #c9faff 64%, #6ee7ff 100%);
-		border: 2px solid #0b0920;
-		box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);
+		width: 12px;
+		height: 20px;
+		border-radius: 2px;
+		background: linear-gradient(180deg, #423a5d, #191528);
+		border: 1px solid #5d5282;
 	}
 
 	.scrub:disabled {
@@ -1387,18 +1383,17 @@
 	}
 
 	.action.primary {
-		background: linear-gradient(180deg, #b6feff 0%, #57e8ff 44%, #3d9bff 100%);
-		border-color: rgba(255, 255, 255, 0.45);
-		color: #03101f;
+		background: var(--pl-accent);
+		border-color: #b7fbff;
+		color: #041016;
 		font-weight: 700;
-		text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
 		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.6),
-			0 0 16px rgba(87, 247, 255, 0.35);
+			inset 0 1px 0 rgba(255, 255, 255, 0.55),
+			inset 0 -1px 0 rgba(0, 0, 0, 0.2);
 	}
 
 	.action.primary:hover:not(:disabled) {
-		background: linear-gradient(180deg, #c9feff 0%, #6ceeff 44%, #54aaff 100%);
+		background: #8df7ff;
 	}
 
 	.action.danger {
@@ -1471,9 +1466,7 @@
 
 	.thumb.current {
 		border-color: var(--pl-accent);
-		box-shadow:
-			0 0 0 1px var(--pl-accent),
-			0 0 14px rgba(87, 247, 255, 0.4);
+		box-shadow: 0 0 0 1px var(--pl-accent);
 	}
 
 	.thumb.current img {
@@ -1506,7 +1499,7 @@
 
 	.progress {
 		height: 5px;
-		border-radius: 999px;
+		border-radius: 1px;
 		overflow: hidden;
 		background: color-mix(in srgb, var(--pl-ink) 12%, transparent);
 		flex: none;
@@ -1515,8 +1508,7 @@
 	.progress > span {
 		display: block;
 		height: 100%;
-		background: var(--pl-neon);
-		box-shadow: 0 0 10px rgba(87, 247, 255, 0.6);
+		background: var(--pl-accent);
 		transition: width 120ms linear;
 	}
 
@@ -1528,12 +1520,16 @@
 	}
 
 	@media (min-width: 640px) {
-		.timeline-sheet {
-			width: calc(100% - 16px);
-		}
-
 		.timeline-main {
 			grid-template-columns: 320px minmax(0, 1fr);
+		}
+	}
+
+	@media (max-width: 900px) {
+		.timeline-layer {
+			left: 0;
+			right: 0;
+			bottom: calc(var(--pl-bar) + 60px);
 		}
 	}
 
