@@ -30,6 +30,7 @@
 	"dependencies": {
 		"@ui-sdk/core": "0.1.0-beta.3",
 		"@ui-sdk/svelte": "0.1.0-beta.3",
+		"allo-font": "^1.0.0",
 		"mediabunny": "^1.65.2",
 		"typegpu": "^0.11.2"
 	}
