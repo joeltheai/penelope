@@ -3,8 +3,8 @@
 
 	let {
 		name,
-		size = 19,
-		strokeWidth = 1.7,
+		size = 20,
+		strokeWidth = 2,
 		class: className = ''
 	}: {
 		name: IconName;
